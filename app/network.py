@@ -14,6 +14,13 @@ def init_network():
     with database() as db:
         for table, columns in {
             'stops': {
+                'source': "TEXT NOT NULL DEFAULT 'sample'",
+                'external_id': 'TEXT',
+                'imported_at': 'TEXT',
+                'last_synced_at': 'TEXT',
+                'verification_method': 'TEXT',
+                'state': "TEXT NOT NULL DEFAULT 'Lagos'",
+                'country': "TEXT NOT NULL DEFAULT 'Nigeria'",
                 'alternative_names': "TEXT NOT NULL DEFAULT ''",
                 'area': "TEXT NOT NULL DEFAULT ''",
                 'local_government_area': "TEXT NOT NULL DEFAULT ''",
@@ -24,6 +31,12 @@ def init_network():
                 'updated_at': 'TEXT',
             },
             'routes': {
+                'external_id': 'TEXT',
+                'imported_at': 'TEXT',
+                'last_synced_at': 'TEXT',
+                'verification_method': 'TEXT',
+                'state': "TEXT NOT NULL DEFAULT 'Lagos'",
+                'country': "TEXT NOT NULL DEFAULT 'Nigeria'",
                 'name': "TEXT NOT NULL DEFAULT ''",
                 'operator': "TEXT NOT NULL DEFAULT ''",
                 'estimated_max_fare': 'INTEGER',
@@ -47,6 +60,26 @@ def init_network():
             );
             CREATE INDEX IF NOT EXISTS idx_route_stops_stop ON route_stops(stop_id,route_id);
             CREATE INDEX IF NOT EXISTS idx_stops_coords ON stops(latitude,longitude);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_stops_source_external ON stops(source,external_id) WHERE external_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_stops_source_status ON stops(source,status);
+            CREATE INDEX IF NOT EXISTS idx_routes_source_external ON routes(source,external_id);
+            CREATE TABLE IF NOT EXISTS place_cache (
+                id INTEGER PRIMARY KEY, query_normalized TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL, latitude REAL NOT NULL, longitude REAL NOT NULL,
+                place_type TEXT, source TEXT NOT NULL, external_id TEXT,
+                city TEXT, state TEXT, country TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_used_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_places_name ON place_cache(display_name);
+            CREATE TABLE IF NOT EXISTS route_discoveries (
+                id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),
+                starting_stop TEXT NOT NULL, destination_stop TEXT NOT NULL,
+                transport_type TEXT NOT NULL, transfer_details TEXT NOT NULL DEFAULT '',
+                approximate_fare INTEGER, instructions TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, reviewed_at TEXT
+            );
         ''')
         # LAMATA publishes both directions and all five station names. Do not
         # guess coordinates or fares; those remain unknown until sourced.
@@ -83,15 +116,19 @@ def distance_m(lat1, lon1, lat2, lon2):
     a = math.sin(dlat/2)**2 + math.cos(r1)*math.cos(r2)*math.sin(dlon/2)**2
     return round(6371000 * 2 * math.atan2(math.sqrt(a),math.sqrt(1-a)))
 
-def nearby(lat, lon, limit=8):
+def nearby(lat, lon, limit=8, radius=None):
     with database() as db:
-        rows=[dict(r) for r in db.execute("SELECT * FROM stops WHERE latitude IS NOT NULL AND longitude IS NOT NULL AND status='Active' AND city='Lagos'")]
+        # Bounding box keeps the geographic lookup bounded even after a large import.
+        search_radius=radius or 3000
+        dlat=search_radius/111000
+        dlon=search_radius/(111000*max(.1,math.cos(math.radians(lat))))
+        rows=[dict(r) for r in db.execute("SELECT * FROM stops WHERE latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ? AND status='Active' AND city='Lagos'",(lat-dlat,lat+dlat,lon-dlon,lon+dlon))]
         for row in rows:
             row['distance_m']=distance_m(lat,lon,row['latitude'],row['longitude'])
             row['routes_served']=[dict(r) for r in db.execute('''SELECT routes.id,routes.name,routes.origin,routes.destination,routes.transport_type
                 FROM route_stops JOIN routes ON routes.id=route_stops.route_id
                 WHERE route_stops.stop_id=? AND routes.active=1 AND routes.source!='sample' ORDER BY routes.id''',(row['id'],))]
-    return sorted(rows,key=lambda x:x['distance_m'])[:limit]
+    return sorted((r for r in rows if r['distance_m']<=search_radius),key=lambda x:x['distance_m'])[:limit]
 
 def suggestions(query, limit=8):
     query=query.strip()
@@ -114,22 +151,26 @@ def resolve(db, query):
         elif any(term in str(n).casefold() for n in names if n): partial.append(dict(row))
     return exact or partial[:4]
 
-def journeys(origin='', destination='', lat=None, lon=None):
+def journeys(origin='', destination='', lat=None, lon=None, origin_place=None, destination_place=None):
     with database() as db:
-        targets=resolve(db,destination)
+        targets=nearby(destination_place['latitude'],destination_place['longitude'],limit=8,radius=2000) if destination_place else resolve(db,destination)
         if not targets:
-            return {'options':[], 'reason':'Destination is not a known stop yet. Try a stop name or nearby landmark.'}
+            return {'options':[], 'reason':'We found the location, but transport information nearby is not available yet.' if destination_place else 'We could not find this location. Try another spelling or a nearby landmark.', 'nearby_destination_stops':[]}
         if lat is not None and lon is not None:
-            starts=[s for s in nearby(lat,lon,limit=5) if s['distance_m']<=3000]
+            starts=nearby(lat,lon,limit=8,radius=2000)
             if not starts:
-                return {'options':[], 'reason':'No mapped transport stops were found nearby. Enter a starting point manually.'}
+                return {'options':[], 'reason':'We found the location, but transport information nearby is not available yet.', 'nearby_destination_stops':targets}
+        elif origin_place:
+            starts=nearby(origin_place['latitude'],origin_place['longitude'],limit=8,radius=2000)
+            if not starts:
+                return {'options':[], 'reason':'We found the location, but transport information nearby is not available yet.', 'nearby_destination_stops':targets}
         else:
             starts=resolve(db,origin)
             if not starts:
-                return {'options':[], 'reason':'Starting point is not a known stop yet. Try a stop name or nearby landmark.'}
+                return {'options':[], 'reason':'We could not find this location. Try another spelling or a nearby landmark.', 'nearby_destination_stops':targets}
         route_rows=[dict(r) for r in db.execute("SELECT * FROM routes WHERE active=1 AND source!='sample' AND city='Lagos'")]
         if not route_rows:
-            return {'options':[], 'reason':'No reviewed transport connections are available yet. Route information for part of this journey has not been verified yet.'}
+            return {'options':[], 'reason':'We found nearby transport stops, but we do not yet have enough reviewed route information for this journey.', 'nearby_destination_stops':targets}
         route_by_id={r['id']:r for r in route_rows}
         stops={r['id']:dict(r) for r in db.execute("SELECT id,name,latitude,longitude,stop_type,verified FROM stops WHERE status='Active'")}
         adj=defaultdict(list)
@@ -143,6 +184,7 @@ def journeys(origin='', destination='', lat=None, lon=None):
                 if a!=b and a in stops and b in stops:
                     adj[a].append((b,rid))
         target_ids={t['id'] for t in targets}
+        target_walks={t['id']:t.get('distance_m',0) for t in targets}
         results=[]; serial=0
         # Prioritize fewer transfers, then fewer stops. Hard bounds prevent runaway cycles.
         queue=[]
@@ -197,15 +239,12 @@ def journeys(origin='', destination='', lat=None, lon=None):
             fare_known=all(s['fare_min'] is not None for s in segments)
             duration_known=all(s['duration'] is not None for s in segments)
             end=segments[-1]['alight_stop']
-            target_walk=None
-            for target in targets:
-                if target['id']==end['id'] and lat is not None and target['latitude'] is not None:
-                    target_walk=0
+            target_walk=target_walks.get(end['id']) if destination_place else None
             options.append({'segments':segments,'transfers':len(segments)-1,
                 'fare_min':sum(s['fare_min'] for s in segments) if fare_known else None,
                 'fare_max':sum(s['fare_max'] for s in segments) if fare_known else None,
                 'duration_min':sum(s['duration'] for s in segments) if duration_known else None,
-                'walk_to_board_m':walk if lat is not None else None,'walk_to_destination_m':target_walk,
+                'walk_to_board_m':walk if lat is not None or origin_place else None,'walk_to_destination_m':target_walk,
                 'all_verified':all(s['verified'] and s['board_stop']['verified'] and s['alight_stop']['verified'] for s in segments),'origin':segments[0]['board_stop']['name'],
                 'destination':end['name']})
         # Deduplicate same boarding service sequence and stops, then present varied choices.
@@ -214,5 +253,5 @@ def journeys(origin='', destination='', lat=None, lon=None):
             key=tuple((s['route_id'],s['board_stop']['id'],s['alight_stop']['id']) for s in option['segments'])
             unique.setdefault(key,option)
         return {'options':list(unique.values())[:6],
-            'reason':None if unique else 'No reviewed connection between these stops yet. Route information for part of this journey has not been verified yet.',
-            'searched_stops':len(starts)}
+            'reason':None if unique else 'We found nearby transport stops, but we do not yet have enough reviewed route information for this journey.',
+            'searched_stops':len(starts),'nearby_origin_stops':starts,'nearby_destination_stops':targets}

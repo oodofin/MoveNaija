@@ -17,6 +17,7 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from .db import database, init_db
 from .network import MODES, STOP_TYPES, init_network, journeys, nearby, suggestions
+from .locations import resolve_place, cached_suggestions
 
 ROOT = Path(__file__).resolve().parent
 COOKIE = 'movenaija_session'
@@ -283,13 +284,42 @@ def stops():
 def suggest(q: str = ''):
     if len(q) > 100:
         raise HTTPException(422, 'Search is too long.')
-    return suggestions(q)
+    if len(q.strip())<2: return []
+    return suggestions(q) + [{'name':p['display_name'],'area':p['city'] or p['state'], 'location':p['display_name'],
+                               'latitude':p['latitude'],'longitude':p['longitude'],'source':p['source']} for p in cached_suggestions(q)]
+
+@app.get('/api/locations/search')
+def location_search(q: str):
+    if not 2 <= len(q.strip()) <= 100:
+        raise HTTPException(422,'Enter at least two characters.')
+    place=resolve_place(q)
+    if not place: raise HTTPException(404,'We could not find this location. Try another spelling or a nearby landmark.')
+    return place
+
+def plan(origin, destination, lat=None, lon=None):
+    # Stop aliases remain usable even before coordinates are sourced.
+    from .network import resolve
+    with database() as db:
+        known_dest=resolve(db,destination)
+        known_origin=resolve(db,origin) if lat is None else []
+    dest_place=None if known_dest else resolve_place(destination)
+    origin_place=None if lat is not None or known_origin else resolve_place(origin)
+    if not known_dest and not dest_place:
+        return {'options':[],'reason':'We could not find this location. Try another spelling or a nearby landmark.', 'status':'place_not_found'}
+    if lat is None and not known_origin and not origin_place:
+        return {'options':[],'reason':'We could not find the starting location. Try another spelling or a nearby landmark.', 'status':'place_not_found'}
+    result=journeys(origin,destination,lat,lon,origin_place,dest_place)
+    result['origin_place']=origin_place or ({'display_name':'Current location','latitude':lat,'longitude':lon} if lat is not None else None)
+    result['destination_place']=dest_place
+    result['status']='route_found' if result['options'] else ('no_nearby_stops' if 'transport information nearby' in result['reason'] else 'no_connected_route')
+    return result
 
 @app.get('/api/stops/nearby')
-def nearby_stops(lat: float, lon: float):
+def nearby_stops(lat: float, lon: float, radius: int = 2000):
     if not (-90 <= lat <= 90 and -180 <= lon <= 180):
         raise HTTPException(422, 'Invalid coordinates.')
-    return nearby(lat, lon)
+    if radius not in (500,1000,2000,3000): raise HTTPException(422,'Unsupported radius.')
+    return nearby(lat, lon, radius=radius)
 
 @app.get('/api/journeys')
 def find_journeys(destination: str, origin: str = '', lat: float | None = None, lon: float | None = None):
@@ -301,7 +331,7 @@ def find_journeys(destination: str, origin: str = '', lat: float | None = None, 
         raise HTTPException(422, 'Invalid coordinates.')
     if lat is None and len(origin.strip()) < 2:
         raise HTTPException(422, 'Enter a starting point or use your current location.')
-    return journeys(origin, destination, lat, lon)
+    return plan(origin, destination, lat, lon)
 
 @app.get('/api/me/recent')
 def recent(user=Depends(current_user)):
@@ -325,7 +355,7 @@ def nearby_stops_private(data: Coordinates):
 
 @app.post('/api/journeys')
 def journey_private(data: JourneyQuery):
-    return journeys(destination=data.destination,lat=data.lat,lon=data.lon)
+    return plan('',data.destination,data.lat,data.lon)
 
 @app.post('/api/me/recent',status_code=201)
 def save_search(data:SearchInput,user=Depends(current_user)):
@@ -352,6 +382,27 @@ def unsave(route_id:int,user=Depends(current_user)):
     with database() as db:
         db.execute('DELETE FROM saved_routes WHERE user_id=? AND route_id=?',(user['id'],route_id))
     return {'ok':True}
+
+class RouteDiscoveryInput(BaseModel):
+    starting_stop: str = Field(min_length=2,max_length=120)
+    destination_stop: str = Field(min_length=2,max_length=120)
+    transport_type: str = Field(min_length=2,max_length=40)
+    transfer_details: str = Field(default='',max_length=500)
+    approximate_fare: int | None = Field(default=None,gt=0,le=1000000)
+    instructions: str = Field(min_length=10,max_length=1200)
+
+@app.post('/api/reports/routes',status_code=201)
+def report_route_discovery(data:RouteDiscoveryInput,user=Depends(current_user)):
+    with database() as db:
+        cur=db.execute('''INSERT INTO route_discoveries(user_id,starting_stop,destination_stop,transport_type,transfer_details,approximate_fare,instructions)
+            VALUES(?,?,?,?,?,?,?)''',(user['id'],*data.model_dump().values()))
+    return {'id':cur.lastrowid,'status':'pending'}
+
+@app.get('/api/me/route-discoveries')
+def my_route_discoveries(user=Depends(current_user)):
+    with database() as db:
+        return [dict(r) for r in db.execute('SELECT * FROM route_discoveries WHERE user_id=? ORDER BY id DESC LIMIT 50',(user['id'],))]
+
 
 @app.post('/api/reports',status_code=201)
 def create_report(data:ReportInput,user=Depends(current_user)):
@@ -419,10 +470,100 @@ def stale_routes(user=Depends(admin)):
     with database() as db:
         return [dict(r) for r in db.execute("SELECT id,name,origin,destination,last_verified_at,source_url FROM routes WHERE active=1 AND source!='sample' AND (verified=0 OR last_verified_at IS NULL OR last_verified_at<date('now','-180 days')) ORDER BY last_verified_at LIMIT 100")]
 
+@app.get('/api/admin/transport/stops')
+def transport_stops(q: str = '', source: str = '', verified: bool | None = None, user=Depends(admin)):
+    with database() as db:
+        return [dict(r) for r in db.execute('''SELECT * FROM stops WHERE name LIKE ? AND (?='' OR source=?) AND (? IS NULL OR verified=?) ORDER BY id DESC LIMIT 100''',
+            ('%'+q[:100].replace('%','\\%').replace('_','\\_')+'%',source,source,verified,verified))]
+
+@app.get('/api/admin/transport/routes')
+def transport_routes(q: str = '', source: str = '', verified: bool | None = None, user=Depends(admin)):
+    with database() as db:
+        return [dict(r) for r in db.execute('''SELECT * FROM routes WHERE (name LIKE ? OR origin LIKE ?) AND (?='' OR source=?) AND (? IS NULL OR verified=?) ORDER BY id DESC LIMIT 100''',
+            ('%'+q[:100]+'%','%'+q[:100]+'%',source,source,verified,verified))]
+
+class TransportDecision(BaseModel):
+    action: str = Field(pattern='^(verify|deactivate)$')
+    source_url: str = Field(default='', max_length=500)
+
+class MergeStops(BaseModel):
+    keep_id: int
+    duplicate_id: int
+
+@app.post('/api/admin/transport/stops/merge')
+def merge_stops(data: MergeStops,user=Depends(admin)):
+    if data.keep_id==data.duplicate_id: raise HTTPException(422,'Select two different stops.')
+    with database() as db:
+        rows=db.execute('SELECT id FROM stops WHERE id IN (?,?)',(data.keep_id,data.duplicate_id)).fetchall()
+        if len(rows)!=2: raise HTTPException(404,'One of the stops was not found.')
+        overlap=db.execute('''SELECT 1 FROM route_stops a JOIN route_stops b ON a.route_id=b.route_id
+                              WHERE a.stop_id=? AND b.stop_id=? LIMIT 1''',(data.keep_id,data.duplicate_id)).fetchone()
+        if overlap: raise HTTPException(409,'Both stops are on the same route. Review its stop order manually before merging.')
+        db.execute('UPDATE route_stops SET stop_id=? WHERE stop_id=?',(data.keep_id,data.duplicate_id))
+        db.execute('UPDATE stops SET status="Inactive",updated_at=CURRENT_TIMESTAMP WHERE id=?',(data.duplicate_id,))
+        audit(db,user,'merge_into_'+str(data.keep_id),'stop',data.duplicate_id)
+    return {'ok':True}
+
+@app.patch('/api/admin/transport/stops/{stop_id}')
+def decide_stop(stop_id: int, data: TransportDecision, user=Depends(admin)):
+    if data.action=='verify' and not data.source_url.startswith('https://'):
+        raise HTTPException(422,'Verification requires a trusted HTTPS source.')
+    with database() as db:
+        cur=db.execute('UPDATE stops SET verified=CASE WHEN ?="verify" THEN 1 ELSE verified END,status=CASE WHEN ?="deactivate" THEN "Inactive" ELSE status END,source_url=CASE WHEN ?="verify" THEN ? ELSE source_url END,verification_method=CASE WHEN ?="verify" THEN "admin review" ELSE verification_method END,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                       (data.action,data.action,data.action,data.source_url,data.action,stop_id))
+        if not cur.rowcount: raise HTTPException(404,'Stop not found.')
+        audit(db,user,data.action,'stop',stop_id)
+    return {'ok':True}
+
+@app.patch('/api/admin/transport/routes/{route_id}')
+def decide_transport_route(route_id: int, data: TransportDecision, user=Depends(admin)):
+    if data.action=='verify' and not data.source_url.startswith('https://'):
+        raise HTTPException(422,'Verification requires a trusted HTTPS source.')
+    with database() as db:
+        cur=db.execute('UPDATE routes SET verified=CASE WHEN ?="verify" THEN 1 ELSE verified END,active=CASE WHEN ?="deactivate" THEN 0 ELSE active END,source_url=CASE WHEN ?="verify" THEN ? ELSE source_url END,verification_method=CASE WHEN ?="verify" THEN "admin review" ELSE verification_method END,last_verified_at=CASE WHEN ?="verify" THEN CURRENT_DATE ELSE last_verified_at END WHERE id=? AND source!="sample"',
+                       (data.action,data.action,data.action,data.source_url,data.action,data.action,route_id))
+        if not cur.rowcount: raise HTTPException(404,'Route not found.')
+        audit(db,user,data.action,'route',route_id)
+    return {'ok':True}
+
+@app.post('/api/admin/transport/import',status_code=201)
+def import_approved_routes(data: list[RouteInput],user=Depends(admin)):
+    if not 1<=len(data)<=100: raise HTTPException(422,'Submit between 1 and 100 routes.')
+    for route in data:
+        validate_route_data(route)
+        if route.source!='verified' or not route.verified or len(route.stop_ids)<2:
+            raise HTTPException(422,'Import only source-backed verified routes with ordered stop IDs.')
+    ids=[]
+    with database() as db:
+        for route in data:
+            values=route.model_dump(exclude={'stop_ids'})
+            values['duration_known']=int(route.estimated_duration is not None)
+            values['estimated_duration']=route.estimated_duration or 1
+            values['last_verified_at']=datetime.now(timezone.utc).date().isoformat()
+            values['verification_method']='admin dataset review'
+            cur=db.execute(f"INSERT INTO routes({','.join(values)}) VALUES({','.join('?' for _ in values)})",tuple(values.values()))
+            set_route_stops(db,cur.lastrowid,route.stop_ids)
+            audit(db,user,'import','route',cur.lastrowid)
+            ids.append(cur.lastrowid)
+    return {'ids':ids}
+
 @app.get('/api/admin/reports')
 def admin_reports(user=Depends(admin)):
     with database() as db:
         return [dict(r) for r in db.execute('SELECT reports.*,users.name AS reporter FROM reports JOIN users ON users.id=reports.user_id ORDER BY CASE reports.status WHEN \'pending\' THEN 0 ELSE 1 END, reports.id DESC LIMIT 100')]
+
+@app.get('/api/admin/route-discoveries')
+def admin_route_discoveries(user=Depends(admin)):
+    with database() as db:
+        return [dict(r) for r in db.execute('SELECT route_discoveries.*,users.name AS reporter FROM route_discoveries JOIN users ON users.id=route_discoveries.user_id ORDER BY CASE route_discoveries.status WHEN "pending" THEN 0 ELSE 1 END,route_discoveries.id DESC LIMIT 100')]
+
+@app.patch('/api/admin/route-discoveries/{report_id}')
+def review_route_discovery(report_id:int,data:Decision,user=Depends(admin)):
+    with database() as db:
+        cur=db.execute('UPDATE route_discoveries SET status=?,reviewed_at=CURRENT_TIMESTAMP WHERE id=? AND status="pending"',(data.status,report_id))
+        if not cur.rowcount: raise HTTPException(404,'Pending suggestion not found.')
+        audit(db,user,data.status,'route_discovery',report_id)
+    return {'ok':True,'note':'Review does not create or verify a transport connection.'}
 
 @app.get('/api/admin/fare-reports')
 def admin_fare_reports(user=Depends(admin)):
@@ -497,6 +638,7 @@ def connect_route_stops(route_id: int, data: OrderedStops, user=Depends(admin)):
 @app.post('/api/admin/stops',status_code=201)
 def add_stop(data:StopInput,user=Depends(admin)):
     values=data.model_dump()
+    values['source']='admin'
     if data.verified and not data.source_url.startswith('https://'):
         raise HTTPException(422, 'Verified stops require a trusted HTTPS source.')
     values['created_at']=values['updated_at']=datetime.now(timezone.utc).isoformat()

@@ -102,3 +102,61 @@ def test_admin_graph_transfers_coordinates_and_fare_moderation(client):
     assert client.patch('/api/admin/fare-reports/'+str(report.json()['id']),headers=headers,json={'status':'approved'}).status_code==200
     assert client.get('/api/routes/'+str(first.json()['id'])).json()['estimated_fare']==300
     assert client.post('/api/admin/routes',headers=headers,json={**base,'verified':True,'source':'verified','stop_ids':ids[:2]}).status_code==422
+
+def test_place_resolution_cache_and_missing_connections(client,monkeypatch):
+    import app.locations as locations
+    calls=[]
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self,*args): pass
+        def read(self): return b''
+    def fake_open(request,timeout):
+        calls.append(request.full_url)
+        return Response()
+    monkeypatch.setattr(locations.urllib.request,'urlopen',fake_open)
+    monkeypatch.setattr(locations.json,'load',lambda _: [{'lat':'6.55','lon':'3.30','display_name':'Ikotun, Lagos, Nigeria','type':'suburb','osm_type':'relation','osm_id':123,'address':{'country_code':'ng','state':'Lagos'}}])
+    first=client.get('/api/locations/search',params={'q':'Ikotun'})
+    assert first.status_code==200 and first.json()['latitude']==6.55
+    assert client.get('/api/locations/search',params={'q':' ikotun '}).status_code==200
+    assert len(calls)==1
+    result=client.get('/api/journeys',params={'origin':'Yaba','destination':'Ikotun'}).json()
+    assert result['status']=='no_nearby_stops' and result['destination_place']['display_name'].startswith('Ikotun')
+    assert result['options']==[]
+    assert client.get('/api/locations/suggest',params={'q':'Iko'}).json()
+
+def test_osm_import_is_idempotent_and_not_a_route(client):
+    from scripts.import_lagos_transport import import_elements
+    import app.db as db
+    payload={'elements':[{'type':'node','id':71,'lat':6.5,'lon':3.4,'tags':{'highway':'bus_stop','name':'Reported test stop'}}]}
+    assert import_elements(payload)==1
+    assert import_elements(payload)==1
+    with db.database() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM stops WHERE external_id='node:71'").fetchone()[0]==1
+        stop=conn.execute("SELECT * FROM stops WHERE external_id='node:71'").fetchone()
+        assert stop['verified']==0 and stop['source']=='openstreetmap'
+        assert conn.execute('SELECT COUNT(*) FROM route_stops WHERE stop_id=?',(stop['id'],)).fetchone()[0]==0
+
+def test_route_discovery_stays_out_of_graph_after_review(client):
+    csrf=register(client,'reviewer@example.com')
+    import app.db as db
+    with db.database() as conn:
+        conn.execute("UPDATE users SET role='admin' WHERE email='reviewer@example.com'")
+    headers={'X-CSRF-Token':csrf}
+    row=client.post('/api/reports/routes',headers=headers,json={'starting_stop':'One stop','destination_stop':'Another stop','transport_type':'Bus','instructions':'Change at a known junction.'})
+    assert row.status_code==201 and row.json()['status']=='pending'
+    assert client.patch('/api/admin/route-discoveries/'+str(row.json()['id']),headers=headers,json={'status':'approved'}).status_code==200
+    with db.database() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM routes WHERE origin='One stop'").fetchone()[0]==0
+
+def test_requested_searches_do_not_invent_connections(client,monkeypatch):
+    import app.main as main
+    known={'Ikotun','Lekki Phase 1','Ajah','Computer Village','Egbeda','Ikorodu','University of Lagos','Ikeja City Mall','Surulere','Oshodi','Ikeja','CMS','Yaba'}
+    monkeypatch.setattr(main,'resolve_place',lambda q: {'display_name':q+', Lagos','latitude':6.5,'longitude':3.4,'source':'openstreetmap'} if q in known else None)
+    searches=[('Yaba','Ikotun'),('Ikeja','Lekki Phase 1'),('Oshodi','Ajah'),('Surulere','Computer Village'),('Egbeda','CMS'),('Ikorodu','Yaba')]
+    for origin,destination in searches:
+        result=client.get('/api/journeys',params={'origin':origin,'destination':destination}).json()
+        assert result['status'] in {'no_nearby_stops','no_connected_route'}
+        assert result['options']==[]
+    for destination in ['Ikotun','University of Lagos','Ikeja City Mall']:
+        result=client.post('/api/journeys',json={'lat':6.5,'lon':3.4,'destination':destination}).json()
+        assert result['status'] in {'no_nearby_stops','no_connected_route'} and not result['options']

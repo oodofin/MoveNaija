@@ -46,7 +46,7 @@ def test_admin_review_audit_and_escaping(client):
         conn.execute("UPDATE users SET role='admin' WHERE email='admin@example.com'")
     assert client.get('/api/admin/stats').json()['users']==1
     headers={'X-CSRF-Token':csrf}
-    payload={'origin':'New Yaba','destination':'New Ikeja','transport_type':'Bus','estimated_fare':500,'estimated_duration':35,'transfers':0,'instructions':'Walk to stop.|Board the bus.|Get down at destination.','status':'Available','source':'verified','city':'Lagos'}
+    payload={'origin':'New Yaba','destination':'New Ikeja','transport_type':'Bus','estimated_fare':500,'estimated_duration':35,'transfers':0,'instructions':'Walk to stop.|Board the bus.|Get down at destination.','status':'Available','source':'verified','source_url':'https://example.org/transport-record','city':'Lagos'}
     result=client.post('/api/admin/routes',json=payload,headers=headers)
     assert result.status_code==201,result.text
     route_id=result.json()['id']
@@ -55,3 +55,50 @@ def test_admin_review_audit_and_escaping(client):
     assert client.get(f'/api/routes/{route_id}').status_code==404
     with db.database() as conn:
         assert conn.execute('SELECT COUNT(*) FROM audit_logs').fetchone()[0]==2
+
+def test_network_uses_only_connected_stops_and_lamata_sequence(client):
+    direct=client.get('/api/journeys',params={'origin':'Marina','destination':'Mile 2'}).json()
+    assert direct['options']
+    segment=direct['options'][0]['segments'][0]
+    assert segment['mode']=='Rail'
+    assert segment['via']==['Marina Station','National Theatre Station','Iganmu Station','Alaba Station','Mile 2 Station']
+    assert direct['options'][0]['fare_min'] is None
+    assert direct['options'][0]['transfers']==0
+    partial=client.get('/api/journeys',params={'origin':'National Theatre','destination':'Iganmu'}).json()['options'][0]
+    assert partial['duration_min'] is None  # End-to-end estimates are not reused for short rides.
+    unknown=client.get('/api/journeys',params={'origin':'Yaba','destination':'Ikeja'}).json()
+    assert unknown['options']==[]  # Old demonstration cards must not create transport edges.
+    assert client.get('/api/locations/suggest',params={'q':'Iganmu'}).json()
+    assert client.get('/api/stops/nearby',params={'lat':6.52,'lon':3.38}).json()==[]  # No guessed coordinates.
+
+
+def test_admin_graph_transfers_coordinates_and_fare_moderation(client):
+    import app.db as db
+    csrf=register(client,'admin2@example.com')
+    with db.database() as conn:
+        conn.execute("UPDATE users SET role='admin' WHERE email='admin2@example.com'")
+    headers={'X-CSRF-Token':csrf}
+    ids=[]
+    for index,name in enumerate(['Test A','Test B','Test C','Test D']):
+        response=client.post('/api/admin/stops',headers=headers,json={'name':name,'location':'Lagos','latitude':6.5+index*.001,'longitude':3.4,'stop_type':'bus'})
+        assert response.status_code==201,response.text
+        ids.append(response.json()['id'])
+    assert client.get('/api/stops/nearby',params={'lat':6.5,'lon':3.4}).json()[0]['name']=='Test A'
+    assert client.post('/api/stops/nearby',json={'lat':6.5,'lon':3.4}).json()[0]['name']=='Test A'
+    base={'origin':'Test A','destination':'Test B','transport_type':'Bus','estimated_fare':300,'estimated_max_fare':500,'estimated_duration':10,'transfers':0,'instructions':'Board the bus.|Get down at the next stop.','status':'Available','source':'community','city':'Lagos'}
+    first=client.post('/api/admin/routes',headers=headers,json={**base,'stop_ids':ids[:2]})
+    assert first.status_code==201,first.text
+    second=client.post('/api/admin/routes',headers=headers,json={**base,'origin':'Test B','destination':'Test D','stop_ids':ids[1:]})
+    assert second.status_code==201,second.text
+    journey=client.get('/api/journeys',params={'origin':'Test A','destination':'Test D'}).json()['options'][0]
+    geo=client.post('/api/journeys',json={'lat':6.5,'lon':3.4,'destination':'Test D'}).json()
+    assert geo['options'][0]['origin'] in {'Test A','Test B'}
+    assert geo['options'][0]['walk_to_board_m'] is not None
+    assert journey['transfers']==1
+    assert journey['fare_min']==600 and journey['fare_max']==1000
+    assert journey['segments'][1]['via']==['Test B','Test C','Test D']
+    report=client.post('/api/fare-reports',headers=headers,json={'route_id':first.json()['id'],'amount':450,'transport_type':'Bus','paid_on':'2026-09-23'})
+    assert report.status_code==201,report.text
+    assert client.patch('/api/admin/fare-reports/'+str(report.json()['id']),headers=headers,json={'status':'approved'}).status_code==200
+    assert client.get('/api/routes/'+str(first.json()['id'])).json()['estimated_fare']==300
+    assert client.post('/api/admin/routes',headers=headers,json={**base,'verified':True,'source':'verified','stop_ids':ids[:2]}).status_code==422

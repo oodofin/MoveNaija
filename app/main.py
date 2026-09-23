@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from .db import database, init_db
+from .network import MODES, STOP_TYPES, init_network, journeys, nearby, suggestions
 
 ROOT = Path(__file__).resolve().parent
 COOKIE = 'movenaija_session'
@@ -25,6 +26,7 @@ _hits = defaultdict(deque)
 @asynccontextmanager
 async def lifespan(app):
     init_db()
+    init_network()
     yield
 
 app = FastAPI(title='MoveNaija', lifespan=lifespan)
@@ -53,7 +55,7 @@ async def security(request: Request, call_next):
     response = await call_next(request)
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
-    response.headers['Content-Security-Policy'] = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'"
+    response.headers['Content-Security-Policy'] = "default-src 'self'; img-src 'self' data: https://*.tile.openstreetmap.org https://unpkg.com; style-src 'self' https://unpkg.com; script-src 'self' https://unpkg.com; connect-src 'self'; object-src 'none'; base-uri 'self'"
     return response
 
 class Credentials(BaseModel):
@@ -74,17 +76,37 @@ class RouteInput(BaseModel):
     destination: str = Field(min_length=2, max_length=100)
     transport_type: str = Field(min_length=2, max_length=40)
     estimated_fare: int = Field(ge=0, le=1000000)
-    estimated_duration: int = Field(ge=1, le=1440)
+    estimated_duration: int | None = Field(default=None, ge=1, le=1440)
     transfers: int = Field(ge=0, le=10)
     instructions: str = Field(min_length=10, max_length=3000)
     status: str = Field(default='Available', max_length=60)
-    source: str = Field(default='verified', pattern='^(sample|community|verified)$')
+    source: str = Field(default='community', pattern='^(sample|community|verified)$')
     city: str = Field(default='Lagos', min_length=2, max_length=80)
+    name: str = Field(default='', max_length=120)
+    operator: str = Field(default='', max_length=120)
+    estimated_max_fare: int | None = Field(default=None, ge=0, le=1000000)
+    source_url: str = Field(default='', max_length=500)
+    verified: bool = False
+    stop_ids: list[int] = Field(default_factory=list, max_length=100)
     @field_validator('instructions')
     @classmethod
     def steps(cls, value):
         if not all(p.strip() for p in value.split('|')):
             raise ValueError('Separate nonempty steps with |')
+        return value
+
+    @field_validator('transport_type')
+    @classmethod
+    def mode(cls, value):
+        if value not in MODES:
+            raise ValueError('Choose a supported transport mode.')
+        return value
+
+    @field_validator('source_url')
+    @classmethod
+    def safe_source(cls, value):
+        if value and not value.startswith('https://'):
+            raise ValueError('Source link must use HTTPS.')
         return value
 
 class StopInput(BaseModel):
@@ -97,12 +119,47 @@ class StopInput(BaseModel):
     city: str = Field(default='Lagos', max_length=80)
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
+    alternative_names: str = Field(default='', max_length=300)
+    area: str = Field(default='', max_length=100)
+    local_government_area: str = Field(default='', max_length=100)
+    stop_type: str = Field(default='bus', pattern='^(bus|brt|keke|rail|ferry|other)$')
+    verified: bool = False
+    source_url: str = Field(default='', max_length=500)
+
+    @field_validator('source_url')
+    @classmethod
+    def safe_source(cls, value):
+        if value and not value.startswith('https://'):
+            raise ValueError('Source link must use HTTPS.')
+        return value
 
 class RoleInput(BaseModel):
     role: str = Field(pattern='^(user|admin)$')
 
 class Decision(BaseModel):
     status: str = Field(pattern='^(approved|rejected)$')
+
+class FareReportInput(BaseModel):
+    route_id: int
+    amount: int = Field(gt=0, le=1000000)
+    transport_type: str
+    paid_on: str
+    note: str = Field(default='', max_length=500)
+
+    @field_validator('paid_on')
+    @classmethod
+    def valid_date(cls, value):
+        from datetime import date
+        try:
+            paid = date.fromisoformat(value)
+        except ValueError:
+            raise ValueError('Enter a valid date.')
+        if paid > date.today() or (date.today() - paid).days > 90:
+            raise ValueError('Fare report date must be within the past 90 days.')
+        return value
+
+class OrderedStops(BaseModel):
+    stop_ids: list[int] = Field(min_length=2, max_length=100)
 
 def hash_password(password):
     salt = os.urandom(16)
@@ -147,6 +204,8 @@ def public_user(user):
 
 def route_dict(row):
     item = dict(row)
+    if not item.get('duration_known', 1):
+        item['estimated_duration'] = None
     item['instructions'] = item['instructions'].split('|')
     with database() as db:
         item['stops'] = [dict(r) for r in db.execute('SELECT stops.id,stops.name,stops.location,route_stops.position FROM route_stops JOIN stops ON stops.id=route_stops.stop_id WHERE route_id=? ORDER BY position', (item['id'],))]
@@ -220,6 +279,30 @@ def stops():
             stop['routes_served'] = [dict(r) for r in db.execute('SELECT routes.id,routes.origin,routes.destination FROM route_stops JOIN routes ON routes.id=route_stops.route_id WHERE route_stops.stop_id=? AND routes.active=1 ORDER BY routes.origin', (stop['id'],))]
         return rows
 
+@app.get('/api/locations/suggest')
+def suggest(q: str = ''):
+    if len(q) > 100:
+        raise HTTPException(422, 'Search is too long.')
+    return suggestions(q)
+
+@app.get('/api/stops/nearby')
+def nearby_stops(lat: float, lon: float):
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        raise HTTPException(422, 'Invalid coordinates.')
+    return nearby(lat, lon)
+
+@app.get('/api/journeys')
+def find_journeys(destination: str, origin: str = '', lat: float | None = None, lon: float | None = None):
+    if not 2 <= len(destination.strip()) <= 100 or len(origin) > 100:
+        raise HTTPException(422, 'Enter a valid destination and starting point.')
+    if (lat is None) != (lon is None):
+        raise HTTPException(422, 'Provide both latitude and longitude.')
+    if lat is not None and not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        raise HTTPException(422, 'Invalid coordinates.')
+    if lat is None and len(origin.strip()) < 2:
+        raise HTTPException(422, 'Enter a starting point or use your current location.')
+    return journeys(origin, destination, lat, lon)
+
 @app.get('/api/me/recent')
 def recent(user=Depends(current_user)):
     with database() as db:
@@ -228,6 +311,21 @@ def recent(user=Depends(current_user)):
 class SearchInput(BaseModel):
     origin: str = Field(min_length=2,max_length=100)
     destination: str = Field(min_length=2,max_length=100)
+
+class Coordinates(BaseModel):
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
+
+class JourneyQuery(Coordinates):
+    destination: str = Field(min_length=2, max_length=100)
+
+@app.post('/api/stops/nearby')
+def nearby_stops_private(data: Coordinates):
+    return nearby(data.lat,data.lon)
+
+@app.post('/api/journeys')
+def journey_private(data: JourneyQuery):
+    return journeys(destination=data.destination,lat=data.lat,lon=data.lon)
 
 @app.post('/api/me/recent',status_code=201)
 def save_search(data:SearchInput,user=Depends(current_user)):
@@ -270,18 +368,75 @@ def my_reports(user=Depends(current_user)):
     with database() as db:
         return [dict(r) for r in db.execute('SELECT id,route_id,type,description,location,status,created_at,reviewed_at FROM reports WHERE user_id=? ORDER BY id DESC',(user['id'],))]
 
+@app.post('/api/fare-reports', status_code=201)
+def report_fare(data: FareReportInput, user=Depends(current_user)):
+    if data.transport_type not in MODES:
+        raise HTTPException(422, 'Choose a supported mode.')
+    with database() as db:
+        route = db.execute('SELECT transport_type FROM routes WHERE id=? AND active=1', (data.route_id,)).fetchone()
+        if not route:
+            raise HTTPException(404, 'Route not found.')
+        if data.transport_type != route['transport_type']:
+            raise HTTPException(422, 'Transport mode does not match the route.')
+        cur = db.execute('INSERT INTO fare_reports(user_id,route_id,amount,transport_type,paid_on,note) VALUES(?,?,?,?,?,?)',
+            (user['id'],data.route_id,data.amount,data.transport_type,data.paid_on,data.note.strip()))
+    return {'id':cur.lastrowid,'status':'pending'}
+
+@app.get('/api/me/fare-reports')
+def my_fare_reports(user=Depends(current_user)):
+    with database() as db:
+        return [dict(r) for r in db.execute('SELECT id,route_id,amount,transport_type,paid_on,note,status,created_at FROM fare_reports WHERE user_id=? ORDER BY id DESC', (user['id'],))]
+
 def audit(db, user, action, kind, target):
     db.execute('INSERT INTO audit_logs(admin_id,action,target_type,target_id) VALUES(?,?,?,?)',(user['id'],action,kind,target))
+
+def validate_route_data(data: RouteInput):
+    if data.estimated_max_fare is not None and data.estimated_max_fare < data.estimated_fare:
+        raise HTTPException(422, 'Maximum fare must be at least minimum fare.')
+    if data.source == 'verified' and not data.source_url.startswith('https://'):
+        raise HTTPException(422, 'A published route requires an HTTPS source.')
+    if data.verified and data.source != 'verified':
+        raise HTTPException(422, 'Verified routes must use a published source.')
+    if len(data.stop_ids) == 1 or len(set(data.stop_ids)) != len(data.stop_ids):
+        raise HTTPException(422, 'Use at least two different stops in journey order.')
+
+def set_route_stops(db, route_id, ids):
+    if not ids:
+        return
+    rows=db.execute('SELECT id FROM stops WHERE id IN ('+','.join('?' for _ in ids)+') AND status=?', (*ids,'Active')).fetchall()
+    if len(rows)!=len(ids):
+        raise HTTPException(422, 'All stops must exist and be active.')
+    db.execute('DELETE FROM route_stops WHERE route_id=?', (route_id,))
+    db.executemany('INSERT INTO route_stops(route_id,stop_id,position) VALUES(?,?,?)', [(route_id,sid,n) for n,sid in enumerate(ids,1)])
 
 @app.get('/api/admin/stats')
 def stats(user=Depends(admin)):
     with database() as db:
-        return {name:db.execute(f'SELECT COUNT(*) FROM {table} {condition}').fetchone()[0] for name,table,condition in [('users','users',''),('routes','routes','WHERE active=1'),('stops','stops',''),('pending_reports','reports',"WHERE status='pending'")]}
+        return {name:db.execute(f'SELECT COUNT(*) FROM {table} {condition}').fetchone()[0] for name,table,condition in [('users','users',''),('routes','routes','WHERE active=1'),('stops','stops',''),('pending_reports','reports',"WHERE status='pending'"),('pending_fares','fare_reports',"WHERE status='pending'")]}
+
+@app.get('/api/admin/routes/stale')
+def stale_routes(user=Depends(admin)):
+    with database() as db:
+        return [dict(r) for r in db.execute("SELECT id,name,origin,destination,last_verified_at,source_url FROM routes WHERE active=1 AND source!='sample' AND (verified=0 OR last_verified_at IS NULL OR last_verified_at<date('now','-180 days')) ORDER BY last_verified_at LIMIT 100")]
 
 @app.get('/api/admin/reports')
 def admin_reports(user=Depends(admin)):
     with database() as db:
         return [dict(r) for r in db.execute('SELECT reports.*,users.name AS reporter FROM reports JOIN users ON users.id=reports.user_id ORDER BY CASE reports.status WHEN \'pending\' THEN 0 ELSE 1 END, reports.id DESC LIMIT 100')]
+
+@app.get('/api/admin/fare-reports')
+def admin_fare_reports(user=Depends(admin)):
+    with database() as db:
+        return [dict(r) for r in db.execute('SELECT fare_reports.*,users.name AS reporter,routes.origin,routes.destination FROM fare_reports JOIN users ON users.id=fare_reports.user_id JOIN routes ON routes.id=fare_reports.route_id ORDER BY CASE fare_reports.status WHEN \'pending\' THEN 0 ELSE 1 END,fare_reports.id DESC LIMIT 100')]
+
+@app.patch('/api/admin/fare-reports/{report_id}')
+def review_fare(report_id: int, data: Decision, user=Depends(admin)):
+    with database() as db:
+        cur=db.execute("UPDATE fare_reports SET status=?,reviewed_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'",(data.status,report_id))
+        if not cur.rowcount:
+            raise HTTPException(404, 'Pending fare report not found.')
+        audit(db,user,data.status,'fare_report',report_id)
+    return {'ok':True}
 
 @app.patch('/api/admin/reports/{report_id}')
 def review(report_id:int,data:Decision,user=Depends(admin)):
@@ -294,18 +449,29 @@ def review(report_id:int,data:Decision,user=Depends(admin)):
 
 @app.post('/api/admin/routes',status_code=201)
 def add_route(data:RouteInput,user=Depends(admin)):
-    fields=list(data.model_dump())
+    validate_route_data(data)
+    values=data.model_dump(exclude={'stop_ids'})
+    values['duration_known']=int(data.estimated_duration is not None)
+    values['estimated_duration']=data.estimated_duration or 1
+    values['last_verified_at']=datetime.now(timezone.utc).date().isoformat() if data.verified else None
+    fields=list(values)
     with database() as db:
-        cur=db.execute(f"INSERT INTO routes({','.join(fields)},last_updated) VALUES({','.join('?' for _ in fields)},CURRENT_DATE)",list(data.model_dump().values()))
+        cur=db.execute(f"INSERT INTO routes({','.join(fields)},last_updated) VALUES({','.join('?' for _ in fields)},CURRENT_DATE)",list(values.values()))
+        set_route_stops(db,cur.lastrowid,data.stop_ids)
         audit(db,user,'create','route',cur.lastrowid)
     return {'id':cur.lastrowid}
 
 @app.put('/api/admin/routes/{route_id}')
 def edit_route(route_id:int,data:RouteInput,user=Depends(admin)):
-    values=data.model_dump()
+    validate_route_data(data)
+    values=data.model_dump(exclude={'stop_ids'})
+    values['duration_known']=int(data.estimated_duration is not None)
+    values['estimated_duration']=data.estimated_duration or 1
+    values['last_verified_at']=datetime.now(timezone.utc).date().isoformat() if data.verified else None
     with database() as db:
         cur=db.execute('UPDATE routes SET '+','.join(f'{field}=?' for field in values)+',last_updated=CURRENT_DATE WHERE id=? AND active=1',(*values.values(),route_id))
         if not cur.rowcount: raise HTTPException(404,'Route not found.')
+        set_route_stops(db,route_id,data.stop_ids)
         audit(db,user,'update','route',route_id)
     return {'ok':True}
 
@@ -317,9 +483,23 @@ def delete_route(route_id:int,user=Depends(admin)):
         audit(db,user,'archive','route',route_id)
     return {'ok':True}
 
+@app.put('/api/admin/routes/{route_id}/stops')
+def connect_route_stops(route_id: int, data: OrderedStops, user=Depends(admin)):
+    if len(set(data.stop_ids)) != len(data.stop_ids):
+        raise HTTPException(422, 'Stop IDs must be unique.')
+    with database() as db:
+        if not db.execute('SELECT 1 FROM routes WHERE id=? AND active=1',(route_id,)).fetchone():
+            raise HTTPException(404, 'Route not found.')
+        set_route_stops(db,route_id,data.stop_ids)
+        audit(db,user,'connect_stops','route',route_id)
+    return {'ok':True}
+
 @app.post('/api/admin/stops',status_code=201)
 def add_stop(data:StopInput,user=Depends(admin)):
     values=data.model_dump()
+    if data.verified and not data.source_url.startswith('https://'):
+        raise HTTPException(422, 'Verified stops require a trusted HTTPS source.')
+    values['created_at']=values['updated_at']=datetime.now(timezone.utc).isoformat()
     with database() as db:
         try: cur=db.execute(f"INSERT INTO stops({','.join(values)}) VALUES({','.join('?' for _ in values)})",tuple(values.values()))
         except sqlite3.IntegrityError: raise HTTPException(409,'Stop name already exists.')
@@ -329,6 +509,9 @@ def add_stop(data:StopInput,user=Depends(admin)):
 @app.put('/api/admin/stops/{stop_id}')
 def edit_stop(stop_id:int,data:StopInput,user=Depends(admin)):
     values=data.model_dump()
+    if data.verified and not data.source_url.startswith('https://'):
+        raise HTTPException(422, 'Verified stops require a trusted HTTPS source.')
+    values['updated_at']=datetime.now(timezone.utc).isoformat()
     with database() as db:
         try: cur=db.execute('UPDATE stops SET '+','.join(f'{field}=?' for field in values)+' WHERE id=?',(*values.values(),stop_id))
         except sqlite3.IntegrityError: raise HTTPException(409,'Stop name already exists.')

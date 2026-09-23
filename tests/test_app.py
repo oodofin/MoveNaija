@@ -70,8 +70,13 @@ def test_network_uses_only_connected_stops_and_lamata_sequence(client):
     assert direct['options'][0]['transfers']==0
     partial=client.get('/api/journeys',params={'origin':'National Theatre','destination':'Iganmu'}).json()['options'][0]
     assert partial['duration_min'] is None  # End-to-end estimates are not reused for short rides.
-    unknown=client.get('/api/journeys',params={'origin':'Yaba','destination':'Ikeja'}).json()
-    assert unknown['options']==[]  # Old demonstration cards must not create transport edges.
+    red=client.get('/api/journeys',params={'origin':'Yaba','destination':'Ikeja'}).json()
+    assert red['options']  # LAMATA now publishes the Red Line station sequence.
+    assert red['options'][0]['segments'][0]['mode']=='Rail'
+    assert red['options'][0]['segments'][0]['via']==[
+        'Yaba Red Line Station','Mushin Red Line Station','Oshodi Red Line Station','Ikeja Red Line Station']
+    assert red['options'][0]['fare_min'] is None  # No rail fare was established.
+    assert all(s['source']!='sample' for option in red['options'] for s in option['segments'])
     assert client.get('/api/locations/suggest',params={'q':'Iganmu'}).json()
     assert client.get('/api/stops/nearby',params={'lat':6.52,'lon':3.38}).json()==[]  # No guessed coordinates.
 
@@ -198,3 +203,21 @@ def test_statewide_published_corridors_do_not_invent_missing_links(client,monkey
     for origin,destination in [('Ikorodu','Epe'),('Badagry','Ikeja'),('Epe','Lekki'),('Ojo','Victoria Island')]:
         result=client.get('/api/journeys',params={'origin':origin,'destination':destination}).json()
         assert not result.get('published_corridors') and not result['options']
+
+def test_operator_published_ferry_routes_and_repeatable_seed(client):
+    from app.network import init_network
+    import app.db as db
+    first=client.get('/api/journeys',params={'origin':'Ikorodu','destination':'Falomo'}).json()['options']
+    assert first and first[0]['segments'][0]['mode']=='Ferry'
+    assert first[0]['segments'][0]['via']==['Ipakodo Ferry Terminal','Five Cowries Ferry Terminal']
+    assert first[0]['fare_min']==2200 and first[0]['duration_min']==50
+    reverse=client.get('/api/journeys',params={'origin':'Falomo','destination':'Ikorodu'}).json()['options']
+    assert reverse and reverse[0]['fare_min']==2200
+    assert client.get('/api/journeys',params={'origin':'Badore','destination':'Ijede'}).json()['options'][0]['fare_min']==2500
+    with db.database() as conn:
+        route_count=conn.execute("SELECT COUNT(*) FROM routes WHERE external_id LIKE 'lagferry:%' OR external_id LIKE 'lamata:red-line:%'").fetchone()[0]
+        stop_count=conn.execute("SELECT COUNT(*) FROM stops WHERE source='verified' AND stop_type IN ('rail','ferry')").fetchone()[0]
+    init_network()
+    with db.database() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM routes WHERE external_id LIKE 'lagferry:%' OR external_id LIKE 'lamata:red-line:%'").fetchone()[0]==route_count
+        assert conn.execute("SELECT COUNT(*) FROM stops WHERE source='verified' AND stop_type IN ('rail','ferry')").fetchone()[0]==stop_count

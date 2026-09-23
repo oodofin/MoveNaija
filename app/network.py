@@ -109,6 +109,67 @@ def init_network():
                  'Board at the station.|Get down at your destination station.',route_name,source))
             db.executemany('INSERT INTO route_stops(route_id,stop_id,position) VALUES(?,?,?)',
                            [(cur.lastrowid,sid,n) for n,sid in enumerate(ordered,1)])
+
+        # Only published stopping patterns enter the graph. This records no
+        # inferred bus or informal service, no station coordinates, and no
+        # assumed interchange between nearby but distinct terminals.
+        def published_stop(name, area, mode, operator, source_url, state='Lagos'):
+            row=db.execute('SELECT id FROM stops WHERE name=?',(name,)).fetchone()
+            if row: return row['id']
+            return db.execute('''INSERT INTO stops(name,location,description,transport_types,status,city,
+                alternative_names,area,stop_type,verified,source,source_url,verification_method,state,created_at,updated_at)
+                VALUES(?,?,?,?,?,'Lagos',?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)''',
+                (name,f'{area}, {state}',f'{operator} published stop','Rail' if mode=='rail' else 'Ferry',
+                 'Active',area,area,mode,1,'verified',source_url,'operator schedule',state)).lastrowid
+
+        def published_service(key, ordered, mode, operator, source_url, fare=0, duration=None):
+            if db.execute('SELECT 1 FROM routes WHERE external_id=? AND source=\'verified\'',(key,)).fetchone():
+                return
+            names=[db.execute('SELECT name FROM stops WHERE id=?',(sid,)).fetchone()['name'] for sid in ordered]
+            title=f'{operator}: {names[0]} → {names[-1]}'
+            cur=db.execute('''INSERT INTO routes(origin,destination,transport_type,estimated_fare,estimated_duration,
+                duration_known,transfers,instructions,status,source,city,name,operator,verified,source_url,
+                external_id,verification_method,last_verified_at)
+                VALUES(?,?,?,?,?,?,0,?,'Published route','verified','Lagos',?,?,?,?,?,'operator schedule',CURRENT_DATE)''',
+                (names[0],names[-1],mode,fare,duration or 1,int(duration is not None),
+                 'Check the operator timetable and go to the named station or terminal.|Board the listed service.|Get down at your destination stop.',
+                 title,operator,1,source_url,key))
+            db.executemany('INSERT INTO route_stops(route_id,stop_id,position) VALUES(?,?,?)',
+                           [(cur.lastrowid,sid,n) for n,sid in enumerate(ordered,1)])
+
+        red_source='https://www.lamata-ng.com/our-schedule/red-line/'
+        red_areas=['Oyingbo','Yaba','Mushin','Oshodi','Ikeja','Agege','Iju','Agbado']
+        red_ids=[published_stop(f'{area} Red Line Station',area,'rail','LAMATA',red_source,
+                                state='Ogun' if area=='Agbado' else 'Lagos')
+                 for area in red_areas]
+        # The published Mon–Fri schedule gives both directions and stop order.
+        for direction,ordered in (('outbound',red_ids),('inbound',list(reversed(red_ids)))):
+            published_service(f'lamata:red-line:{direction}',ordered,'Rail','LAMATA',red_source,
+                              duration=50)
+
+        ferry_source='https://lagferry.gov.ng/routes-schedules/'
+        ferry_stops={
+            'Ikorodu':('Ipakodo Ferry Terminal','Ikorodu'),
+            'Falomo':('Five Cowries Ferry Terminal','Falomo'),
+            'Badore':('Badore Ferry Terminal','Badore'),
+            'Ojo':('Ebute Ojo Ferry Terminal','Ebute Ojo'),
+            'Marina':('Marina Ferry Terminal','CMS'),
+            'Mile 2':('Mile 2 Ferry Terminal','Mile 2'),
+            'Ijede':('Ijede Jetty','Ijede'),
+        }
+        ferry_ids={key:published_stop(name,area,'ferry','LAGFERRY',ferry_source)
+                   for key,(name,area) in ferry_stops.items()}
+        # Each direction appears in the operator's timetable. Fares and times
+        # below are published for the entire endpoint pair only.
+        ferry_pairs=[('Ikorodu','Falomo',2200,50),('Badore','Falomo',2000,45),
+                     ('Ojo','Marina',1500,50),('Mile 2','Marina',1500,40),
+                     # Ijede's printed duration conflicts with some listed
+                     # departure/arrival pairs; do not assert a trip time.
+                     ('Badore','Ijede',2500,None)]
+        for start,end,fare,duration in ferry_pairs:
+            for a,b in ((start,end),(end,start)):
+                published_service(f'lagferry:{a.lower().replace(" ","-")}:{b.lower().replace(" ","-")}',
+                                  [ferry_ids[a],ferry_ids[b]],'Ferry','LAGFERRY',ferry_source,fare,duration)
         # Demonstration-only corridor for the onboarding search. It has no
         # stop links and therefore cannot enter the transport graph. Fare,
         # duration and boarding location are intentionally unknown.

@@ -17,6 +17,8 @@ Open http://127.0.0.1:8000. The SQLite database and sample routes are created au
 
 The six seeded routes and their fares, journey times, stops and instructions are **illustrative samples**, not validated travel advice or live data. Search Yaba → Ikeja or browse Routes. Do not deploy them as verified commuter guidance. Newly submitted community reports stay pending and never automatically alter route data. Admins can enter separately researched routes and set the appropriate source label.
 
+The Ojuelegba → Mushin demo entry is also marked **sample**. It intentionally has no fare, duration, exact boarding stop or graph links. When an exact search has no documented journey, the app may show its sample card below the missing-data message to demonstrate the intended result format. It is not a confirmed bus service. For real commuter guidance, add reviewed stop sequences and source-backed fares through the administrator tools. Geocoding can locate Mushin but cannot tell MoveNaija which bus serves it.
+
 ## Create the first administrator
 
 Register a normal account in the UI, stop the server, then promote that exact email with:

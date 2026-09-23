@@ -109,6 +109,15 @@ def init_network():
                  'Board at the station.|Get down at your destination station.',route_name,source))
             db.executemany('INSERT INTO route_stops(route_id,stop_id,position) VALUES(?,?,?)',
                            [(cur.lastrowid,sid,n) for n,sid in enumerate(ordered,1)])
+        # Demonstration-only corridor for the onboarding search. It has no
+        # stop links and therefore cannot enter the transport graph. Fare,
+        # duration and boarding location are intentionally unknown.
+        if not db.execute("SELECT 1 FROM routes WHERE source='sample' AND origin='Ojuelegba' AND destination='Mushin'").fetchone():
+            db.execute('''INSERT INTO routes(origin,destination,transport_type,estimated_fare,estimated_duration,
+                duration_known,transfers,instructions,status,source,city,name)
+                VALUES('Ojuelegba','Mushin','Bus',0,1,0,0,?, 'Illustrative only','sample','Lagos',?)''',
+                ('Illustrative example only; this service has not been checked.|Ask at a designated Ojuelegba stop whether a bus is going toward Mushin.|Confirm the boarding point, drop-off point and fare locally before travelling.',
+                 'Illustrative: Ojuelegba → Mushin'))
 
 def distance_m(lat1, lon1, lat2, lon2):
     r1, r2 = math.radians(lat1), math.radians(lat2)

@@ -22,6 +22,10 @@ def test_search_and_sample_labels(client):
     assert client.get('/api/routes',params={'origin':'%','destination':'Ikeja'}).json()==[]
     assert client.get('/api/routes/999').status_code==404
     assert client.get('/').status_code==200
+    demonstration=client.get('/api/routes',params={'origin':'Ojuelegba','destination':'Mushin'}).json()
+    assert len(demonstration)==1 and demonstration[0]['source']=='sample'
+    assert demonstration[0]['estimated_fare']==0 and demonstration[0]['estimated_duration'] is None
+    assert demonstration[0]['stops']==[]  # This demonstration cannot be used as a graph edge.
 
 def test_auth_saved_reports_and_csrf(client):
     csrf=register(client)

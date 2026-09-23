@@ -152,7 +152,12 @@ def suggestions(query, limit=8):
 def resolve(db, query):
     """A stop name, common name or area; only actual stops become graph nodes."""
     term=query.strip().casefold()
-    rows=db.execute("SELECT id,name,alternative_names,area,landmarks,latitude,longitude FROM stops WHERE status='Active' AND city='Lagos'").fetchall()
+    if not term: return []
+    pattern='%'+re.sub(r'([%_\\])',r'\\\1',term)+'%'
+    rows=db.execute('''SELECT id,name,alternative_names,area,landmarks,latitude,longitude FROM stops
+        WHERE status='Active' AND city='Lagos' AND (name LIKE ? ESCAPE '\\' OR alternative_names LIKE ? ESCAPE '\\'
+            OR area LIKE ? ESCAPE '\\' OR landmarks LIKE ? ESCAPE '\\')
+        ORDER BY verified DESC,id LIMIT 100''',(pattern,pattern,pattern,pattern)).fetchall()
     exact=[]; partial=[]
     for row in rows:
         names=[row['name'],row['area'],row['landmarks'],*[a.strip() for a in row['alternative_names'].split(',')]]

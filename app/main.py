@@ -18,7 +18,7 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 from .db import database, init_db
 from .network import MODES, STOP_TYPES, init_network, journeys, nearby, suggestions
 from .locations import resolve_place, cached_suggestions
-from .fares import find_published_fares
+from .fares import find_published_fares, published_corridors
 
 ROOT = Path(__file__).resolve().parent
 COOKIE = 'movenaija_session'
@@ -306,19 +306,29 @@ def published_fares(origin: str, destination: str):
 def plan(origin, destination, lat=None, lon=None):
     # Stop aliases remain usable even before coordinates are sourced.
     from .network import resolve
+    corridors=published_corridors(origin,destination) if lat is None else []
     with database() as db:
         known_dest=resolve(db,destination)
         known_origin=resolve(db,origin) if lat is None else []
     dest_place=None if known_dest else resolve_place(destination)
     origin_place=None if lat is not None or known_origin else resolve_place(origin)
     if not known_dest and not dest_place:
+        if corridors:
+            return {'options':[],'published_corridors':corridors,'reason':None,'status':'published_corridors',
+                    'origin_place':origin_place,'destination_place':None}
         return {'options':[],'reason':'We could not find this location. Try another spelling or a nearby landmark.', 'status':'place_not_found'}
     if lat is None and not known_origin and not origin_place:
+        if corridors:
+            return {'options':[],'published_corridors':corridors,'reason':None,'status':'published_corridors',
+                    'origin_place':None,'destination_place':dest_place}
         return {'options':[],'reason':'We could not find the starting location. Try another spelling or a nearby landmark.', 'status':'place_not_found'}
     result=journeys(origin,destination,lat,lon,origin_place,dest_place)
     result['origin_place']=origin_place or ({'display_name':'Current location','latitude':lat,'longitude':lon} if lat is not None else None)
     result['destination_place']=dest_place
-    result['status']='route_found' if result['options'] else ('no_nearby_stops' if 'transport information nearby' in result['reason'] else 'no_connected_route')
+    result['published_corridors']=corridors
+    result['status']='route_found' if result['options'] else ('published_corridors' if corridors else 'no_nearby_stops' if 'transport information nearby' in result['reason'] else 'no_connected_route')
+    if corridors and not result['options']:
+        result['reason']=None
     return result
 
 @app.get('/api/stops/nearby')

@@ -159,8 +159,11 @@ def test_requested_searches_do_not_invent_connections(client,monkeypatch):
     searches=[('Yaba','Ikotun'),('Ikeja','Lekki Phase 1'),('Oshodi','Ajah'),('Surulere','Computer Village'),('Egbeda','CMS'),('Ikorodu','Yaba')]
     for origin,destination in searches:
         result=client.get('/api/journeys',params={'origin':origin,'destination':destination}).json()
-        assert result['status'] in {'no_nearby_stops','no_connected_route'}
+        assert result['status'] in {'no_nearby_stops','no_connected_route','published_corridors'}
         assert result['options']==[]
+        assert all(segment['source_url'].startswith('https://www.lamata-ng.com/')
+                   for corridor in result.get('published_corridors',[])
+                   for segment in corridor['segments'])
     for destination in ['Ikotun','University of Lagos','Ikeja City Mall']:
         result=client.post('/api/journeys',json={'lat':6.5,'lon':3.4,'destination':destination}).json()
         assert result['status'] in {'no_nearby_stops','no_connected_route'} and not result['options']
@@ -179,3 +182,19 @@ def test_published_fare_is_a_reference_not_a_journey(client,monkeypatch):
     # LAMATA's published list has two conflicting Mile 2–TBS BRT amounts.
     conflict=client.get('/api/fares/published',params={'origin':'Mile 2','destination':'TBS'}).json()
     assert conflict[0]['published_amounts']==[680,510]
+
+def test_statewide_published_corridors_do_not_invent_missing_links(client,monkeypatch):
+    import app.main as main
+    monkeypatch.setattr(main,'resolve_place',lambda q: None)
+    direct=client.get('/api/journeys',params={'origin':'Oshodi','destination':'Ajah'}).json()
+    assert direct['options']==[]
+    assert direct['published_corridors'][0]['segments'][0]['label']=='Oshodi-Ajah'
+    assert direct['published_corridors'][0]['published_fare_sum']==1320
+    change=client.get('/api/journeys',params={'origin':'Ikotun','destination':'Ajah'}).json()
+    assert change['options']==[] and change['status']=='published_corridors'
+    via_cms=next(c for c in change['published_corridors'] if c['transfers']==1)
+    assert [s['label'] for s in via_cms['segments']]==['Ikotun-Marina/CMS','Marina/CMS - Ajah']
+    assert via_cms['published_fare_sum']==1950
+    for origin,destination in [('Ikorodu','Epe'),('Badagry','Ikeja'),('Epe','Lekki'),('Ojo','Victoria Island')]:
+        result=client.get('/api/journeys',params={'origin':origin,'destination':destination}).json()
+        assert not result.get('published_corridors') and not result['options']

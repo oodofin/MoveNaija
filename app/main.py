@@ -18,6 +18,7 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 from .db import database, init_db
 from .network import MODES, STOP_TYPES, init_network, journeys, nearby, suggestions
 from .locations import resolve_place, cached_suggestions
+from .fares import find_published_fares
 
 ROOT = Path(__file__).resolve().parent
 COOKIE = 'movenaija_session'
@@ -295,6 +296,12 @@ def location_search(q: str):
     place=resolve_place(q)
     if not place: raise HTTPException(404,'We could not find this location. Try another spelling or a nearby landmark.')
     return place
+
+@app.get('/api/fares/published')
+def published_fares(origin: str, destination: str):
+    if not (2<=len(origin.strip())<=100 and 2<=len(destination.strip())<=100):
+        raise HTTPException(422,'Enter an origin and destination.')
+    return find_published_fares(origin,destination)
 
 def plan(origin, destination, lat=None, lon=None):
     # Stop aliases remain usable even before coordinates are sourced.

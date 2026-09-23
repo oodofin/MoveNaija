@@ -160,3 +160,18 @@ def test_requested_searches_do_not_invent_connections(client,monkeypatch):
     for destination in ['Ikotun','University of Lagos','Ikeja City Mall']:
         result=client.post('/api/journeys',json={'lat':6.5,'lon':3.4,'destination':destination}).json()
         assert result['status'] in {'no_nearby_stops','no_connected_route'} and not result['options']
+
+def test_published_fare_is_a_reference_not_a_journey(client,monkeypatch):
+    import app.fares as fares
+    import app.main as main
+    monkeypatch.setattr(main,'resolve_place',lambda q: {'display_name':q,'latitude':6.5,'longitude':3.4} if q=='Ajah' else None)
+    assert len(fares.published_data()['rows'])==78
+    direct=client.get('/api/fares/published',params={'origin':'Oshodi','destination':'Ajah'}).json()
+    assert direct[0]['published_amounts']==[1320] and direct[0]['direction']=='listed'
+    reverse=client.get('/api/fares/published',params={'origin':'Yaba','destination':'Ikotun'}).json()
+    assert reverse[0]['published_amounts']==[940] and reverse[0]['direction']=='reverse_listing'
+    assert client.get('/api/fares/published',params={'origin':'Yaba','destination':'Lekki Phase 1'}).json()==[]
+    assert client.get('/api/journeys',params={'origin':'Oshodi','destination':'Ajah'}).json()['options']==[]
+    # LAMATA's published list has two conflicting Mile 2–TBS BRT amounts.
+    conflict=client.get('/api/fares/published',params={'origin':'Mile 2','destination':'TBS'}).json()
+    assert conflict[0]['published_amounts']==[680,510]

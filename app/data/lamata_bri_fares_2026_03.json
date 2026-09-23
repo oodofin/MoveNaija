@@ -1,0 +1,398 @@
+{
+  "source_url": "https://www.lamata-ng.com/bus-fare/",
+  "effective_date": "2026-03-01",
+  "retrieved_on": "2026-09-23",
+  "note": "LAMATA BRI fare list. Endpoint labels do not provide boarding stops, directions, intermediate stops or schedules. Two Mile 2 - TBS BRT entries conflict.",
+  "rows": [
+    {
+      "label": "Oshodi - Abule-Egba",
+      "mode": "BRT",
+      "fare": 680
+    },
+    {
+      "label": "Oshodi - Ayobo",
+      "mode": "BRT",
+      "fare": 890
+    },
+    {
+      "label": "Oshodi - Command",
+      "mode": "BRT",
+      "fare": 890
+    },
+    {
+      "label": "Oshodi - Ikola",
+      "mode": "BRT",
+      "fare": 890
+    },
+    {
+      "label": "Oshodi - Tollgate",
+      "mode": "BRT",
+      "fare": 970
+    },
+    {
+      "label": "Abule-Egba - Ikeja",
+      "mode": "BRT",
+      "fare": 560
+    },
+    {
+      "label": "Abule-Egba - CMS/TBS",
+      "mode": "BRT",
+      "fare": 1080
+    },
+    {
+      "label": "Ikorodu - TBS",
+      "mode": "BRT",
+      "fare": 960
+    },
+    {
+      "label": "Ikorodu-Yaba - Oyingbo/Costain",
+      "mode": "BRT",
+      "fare": 910
+    },
+    {
+      "label": "Ikorodu - Barracks",
+      "mode": "BRT",
+      "fare": 910
+    },
+    {
+      "label": "Ikorodu - Fadeyi",
+      "mode": "BRT",
+      "fare": 680
+    },
+    {
+      "label": "Ikorodu - Oshodi",
+      "mode": "BRT",
+      "fare": 680
+    },
+    {
+      "label": "Ikorodu - Ikeja",
+      "mode": "BRT",
+      "fare": 680
+    },
+    {
+      "label": "Ikorodu - Maryland",
+      "mode": "BRT",
+      "fare": 570
+    },
+    {
+      "label": "Ikorodu - Ojota",
+      "mode": "BRT",
+      "fare": 570
+    },
+    {
+      "label": "Ikorodu - Ketu",
+      "mode": "BRT",
+      "fare": 570
+    },
+    {
+      "label": "Ikorodu - Mile12",
+      "mode": "BRT",
+      "fare": 450
+    },
+    {
+      "label": "Mile 2 - TBS",
+      "mode": "BRT",
+      "fare": 680
+    },
+    {
+      "label": "Ketu - TBS",
+      "mode": "BRT",
+      "fare": 680
+    },
+    {
+      "label": "Ojo Barracks-Mile2",
+      "mode": "BRT",
+      "fare": 510
+    },
+    {
+      "label": "Okokomaiko - Oyingbo",
+      "mode": "BRT",
+      "fare": 910
+    },
+    {
+      "label": "Okokomaiko - Mile 2",
+      "mode": "BRT",
+      "fare": 510
+    },
+    {
+      "label": "Mile 2 - TBS",
+      "mode": "BRT",
+      "fare": 510
+    },
+    {
+      "label": "Okokomaiko - TBS",
+      "mode": "BRT",
+      "fare": 910
+    },
+    {
+      "label": "Ikeja-Berger",
+      "mode": "Standard",
+      "fare": 470
+    },
+    {
+      "label": "Ikeja-Obalende",
+      "mode": "Standard",
+      "fare": 720
+    },
+    {
+      "label": "Berger - Ajah",
+      "mode": "Standard",
+      "fare": 1710
+    },
+    {
+      "label": "Ikeja-IyanaIpaja",
+      "mode": "Standard",
+      "fare": 440
+    },
+    {
+      "label": "Oshodi-Obalende",
+      "mode": "Standard",
+      "fare": 630
+    },
+    {
+      "label": "Berger-Oshodi",
+      "mode": "Standard",
+      "fare": 580
+    },
+    {
+      "label": "Berger-Obalende/TBS",
+      "mode": "Standard",
+      "fare": 690
+    },
+    {
+      "label": "Oshodi-Ajah",
+      "mode": "Standard",
+      "fare": 1320
+    },
+    {
+      "label": "Mile 12- Apapa",
+      "mode": "Standard",
+      "fare": 810
+    },
+    {
+      "label": "Oshodi-Apapa",
+      "mode": "Standard",
+      "fare": 690
+    },
+    {
+      "label": "Obalende - Ajah",
+      "mode": "Standard",
+      "fare": 630
+    },
+    {
+      "label": "Oshodi-Agege",
+      "mode": "Standard",
+      "fare": 430
+    },
+    {
+      "label": "Ikeja-Ikotun",
+      "mode": "Standard",
+      "fare": 630
+    },
+    {
+      "label": "Ikeja-Ayobo",
+      "mode": "Standard",
+      "fare": 690
+    },
+    {
+      "label": "Ikeja-Egbeda",
+      "mode": "Standard",
+      "fare": 570
+    },
+    {
+      "label": "Ikeja-Igando",
+      "mode": "Standard",
+      "fare": 700
+    },
+    {
+      "label": "Oshodi-Tinubu",
+      "mode": "Standard",
+      "fare": 650
+    },
+    {
+      "label": "Oshodi - Orelope",
+      "mode": "Standard",
+      "fare": 690
+    },
+    {
+      "label": "Igando - Obalende",
+      "mode": "Standard",
+      "fare": 1140
+    },
+    {
+      "label": "Baruwa-Ikeja-Oshodi",
+      "mode": "Standard",
+      "fare": 800
+    },
+    {
+      "label": "Marina- Lekki",
+      "mode": "Standard",
+      "fare": 570
+    },
+    {
+      "label": "Egbeda - Obalende",
+      "mode": "Standard",
+      "fare": 1030
+    },
+    {
+      "label": "Iyanalpaja-Obalende",
+      "mode": "Standard",
+      "fare": 1090
+    },
+    {
+      "label": "Odogunyan - Oshodi",
+      "mode": "Standard",
+      "fare": 920
+    },
+    {
+      "label": "Odogunyan - CMS",
+      "mode": "Standard",
+      "fare": 1140
+    },
+    {
+      "label": "JokeAyo-Oshodi",
+      "mode": "Standard",
+      "fare": 920
+    },
+    {
+      "label": "Joke-Ayo-Yaba",
+      "mode": "Standard",
+      "fare": 1030
+    },
+    {
+      "label": "Ifako-Ijaiya-Yaba",
+      "mode": "Standard",
+      "fare": 920
+    },
+    {
+      "label": "Ikotun-Yaba",
+      "mode": "Standard",
+      "fare": 940
+    },
+    {
+      "label": "Oshodi - Shasha",
+      "mode": "Standard",
+      "fare": 570
+    },
+    {
+      "label": "Oshodi - DALEMO",
+      "mode": "Standard",
+      "fare": 920
+    },
+    {
+      "label": "Ikorodu - Obalende",
+      "mode": "Standard",
+      "fare": 970
+    },
+    {
+      "label": "Yaba/Oyingbo-Idumota",
+      "mode": "Standard",
+      "fare": 460
+    },
+    {
+      "label": "Berger - Lekki",
+      "mode": "Standard",
+      "fare": 1140
+    },
+    {
+      "label": "Mile 12 - Yaba- TBS",
+      "mode": "Standard",
+      "fare": 690
+    },
+    {
+      "label": "Ojota - Egbeda",
+      "mode": "Standard",
+      "fare": 690
+    },
+    {
+      "label": "Iyanalpaja - Oyingbo",
+      "mode": "Standard",
+      "fare": 800
+    },
+    {
+      "label": "Ikotun-Marina/CMS",
+      "mode": "Standard",
+      "fare": 1100
+    },
+    {
+      "label": "Ikeja - Kola",
+      "mode": "Standard",
+      "fare": 800
+    },
+    {
+      "label": "Badagry - Mile 2",
+      "mode": "Standard",
+      "fare": 1140
+    },
+    {
+      "label": "Dopemu - Yaba",
+      "mode": "Standard",
+      "fare": 800
+    },
+    {
+      "label": "Abesan-Gate - Oshodi",
+      "mode": "Standard",
+      "fare": 800
+    },
+    {
+      "label": "Ayobo - Obalende",
+      "mode": "Standard",
+      "fare": 1260
+    },
+    {
+      "label": "Dopemu - Obalende",
+      "mode": "Standard",
+      "fare": 1090
+    },
+    {
+      "label": "Marina/CMS - Ajah",
+      "mode": "Standard",
+      "fare": 850
+    },
+    {
+      "label": "Igbogbo - Marina/CMS",
+      "mode": "Standard",
+      "fare": 1140
+    },
+    {
+      "label": "Yaba - Berger",
+      "mode": "Standard",
+      "fare": 630
+    },
+    {
+      "label": "Ikorodu - Alausa Secretariat",
+      "mode": "Standard",
+      "fare": 800
+    },
+    {
+      "label": "Ayobo/Abesan - Fadeyi/Yaba/Oyingbo",
+      "mode": "Standard",
+      "fare": 1090
+    },
+    {
+      "label": "Elepe-Oshodi",
+      "mode": "Standard",
+      "fare": 920
+    },
+    {
+      "label": "Maya-Oshodi",
+      "mode": "Standard",
+      "fare": 920
+    },
+    {
+      "label": "Igbogbo - Oshodi",
+      "mode": "Standard",
+      "fare": 910
+    },
+    {
+      "label": "Alausa Secretariat - Egbeda",
+      "mode": "Standard",
+      "fare": 690
+    },
+    {
+      "label": "Abule-Egba - Ojota",
+      "mode": "Standard",
+      "fare": 690
+    }
+  ]
+}

@@ -99,6 +99,10 @@ def init_network():
                 db.execute(f"ALTER TABLE route_discoveries ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
         if 'route_sequence' not in {r['name'] for r in db.execute('PRAGMA table_info(journey_feedback)')}:
             db.execute("ALTER TABLE journey_feedback ADD COLUMN route_sequence TEXT NOT NULL DEFAULT ''")
+        if 'name_normalized' not in {r['name'] for r in db.execute('PRAGMA table_info(place_cache)')}:
+            db.execute("ALTER TABLE place_cache ADD COLUMN name_normalized TEXT NOT NULL DEFAULT ''")
+        db.execute('CREATE INDEX IF NOT EXISTS idx_places_normalized ON place_cache(name_normalized)')
+        db.execute('CREATE INDEX IF NOT EXISTS idx_places_external ON place_cache(source,external_id)')
         # LAMATA publishes both directions and all five station names. Do not
         # guess coordinates or fares; those remain unknown until sourced.
         source='https://www.lamata-ng.com/blue-line-train-schedule/'

@@ -81,6 +81,26 @@ def test_network_uses_only_connected_stops_and_lamata_sequence(client):
     assert client.get('/api/stops/nearby',params={'lat':6.52,'lon':3.38}).json()==[]  # No guessed coordinates.
 
 
+def test_mapped_lagos_places_resolve_without_inventing_services(client,monkeypatch):
+    from scripts.import_lagos_places import import_elements
+    from app.locations import resolve_place
+    import app.locations as locations
+    import app.db as db
+    monkeypatch.setattr(locations.urllib.request, 'urlopen', lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('Should use local place import')))
+    source={'elements':[
+        {'type':'node','id':123,'lat':6.61,'lon':3.5,'tags':{'name':'Mapped Quarter','place':'neighbourhood'}},
+        {'type':'way','id':456,'center':{'lat':6.62,'lon':3.51},'tags':{'name':'Mapped Hospital','amenity':'hospital','addr:suburb':'Mapped Quarter'}},
+        {'type':'node','id':789,'lat':6.62,'lon':3.51,'tags':{'name':'Outside Lagos','place':'suburb','addr:state':'Ogun'}},
+    ]}
+    assert import_elements(source)==2
+    assert import_elements(source)==2
+    with db.database() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM place_cache WHERE query_normalized LIKE 'osm:%'").fetchone()[0]==2
+    assert resolve_place('Mapped Quarter')['latitude']==6.61
+    assert client.get('/api/locations/suggest',params={'q':'Mapped Hos'}).json()[0]['name'].startswith('Mapped Hospital')
+    assert client.get('/api/journeys',params={'origin':'Mapped Quarter','destination':'Mapped Hospital'}).json()['options']==[]
+
+
 def test_admin_graph_transfers_coordinates_and_fare_moderation(client):
     import app.db as db
     csrf=register(client,'admin2@example.com')

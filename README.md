@@ -73,6 +73,18 @@ python -m scripts.import_lagos_transport /path/to/lagos.json
 
 For a deliberate one-off bounded Overpass query, set `MOVENAIJA_USER_AGENT` with your contact and use `python -m scripts.import_lagos_transport --fetch`. The query uses approximate Lagos bounds and is **not a legal Lagos State polygon**; review its output before use. Respect the [Overpass service limits](https://wiki.openstreetmap.org/wiki/Overpass_API) and use regional extracts or a hosted provider at scale. No bulk import was performed as part of this change. The importer upserts by OSM object type and ID, refreshes coordinates and sync timestamps, and leaves records that disappear from a source in place for review. Imported stops are unverified and have no route links. Because the legacy database has unique stop names, new OSM records display their source ID as a suffix; an admin can merge duplicates after review. Existing accounts, sample data and routes remain in place. Schema additions occur at startup and preserve existing tables.
 
+### Import mapped Lagos places
+
+The separate `scripts.import_lagos_places` command accepts a bounded Overpass JSON export of named neighbourhoods, localities, schools, universities, hospitals, markets, malls, attractions, airports, stations and terminals:
+
+```bash
+python -m scripts.import_lagos_places /path/to/lagos-places.json
+```
+
+For one deliberate source query, set `MOVENAIJA_USER_AGENT` to an app name and contact URL, then run `python -m scripts.import_lagos_places --fetch`. The query uses an approximate Lagos rectangle, not the legal Lagos State boundary. Respect Overpass limits and use a regional extract or hosted source for production scale. The importer stores source IDs and coordinates in `place_cache`, refreshes by source ID, and makes imported names available in local suggestions and searches without another geocoder call. It rejects clearly tagged out-of-state results. Review borderline records and ambiguous names: a source coordinate does not verify a transport service. This repository does not ship a completed Lagos place extract; importing real data is needed for broad offline name coverage.
+
+Journey cards put instructions and fares first, with provenance in expandable data details. Potential bus services from published endpoint fare listings disclose missing boarding stops and transfers. Versioned frontend asset URLs and cache revalidation help browsers pick up UI changes after a pull and server restart.
+
 ### Review and structured route datasets
 
 An admin can use Profile → Transport data to filter records, inspect source and sync time, verify with an HTTPS source, deactivate or merge stops, and paste an array of reviewed routes. `/api/admin/transport/import` validates the entire JSON array (maximum 100 records) and inserts it in one database transaction. Each route needs `origin`, `destination`, `transport_type`, `estimated_fare` (use 0 for unknown), `estimated_duration` (null if unknown), `transfers`, `instructions`, `status`, `source: "verified"`, `verified: true`, `source_url` (HTTPS), and `stop_ids` in journey order. A trusted reviewer must check the source, station order and both directions; no official API is assumed. CSV must be converted to this JSON format before upload. Reviewing a community route suggestion leaves it outside the routing graph until an admin separately creates a source-backed route. Original sample data never enters the network planner.

@@ -19,7 +19,9 @@ def normalize(query):
 def cached_suggestions(query):
     term = '%' + normalize(query).replace('\\','\\\\').replace('%','\\%').replace('_','\\_') + '%'
     with database() as db:
-        return [dict(row) for row in db.execute("SELECT display_name,latitude,longitude,place_type,source,external_id,city,state,country FROM place_cache WHERE query_normalized LIKE ? ESCAPE '\\' OR display_name LIKE ? ESCAPE '\\' LIMIT 8",(term,term))]
+        return [dict(row) for row in db.execute("""SELECT display_name,latitude,longitude,place_type,source,external_id,city,state,country
+            FROM place_cache WHERE (name_normalized LIKE ? ESCAPE '\\' OR query_normalized LIKE ? ESCAPE '\\' OR display_name LIKE ? ESCAPE '\\')
+            AND (state IS NULL OR lower(state)='lagos') ORDER BY CASE WHEN name_normalized=? THEN 0 ELSE 1 END, display_name LIMIT 8""",(term,term,term,normalize(query)))]
 
 def resolve_place(query):
     global _last_request
@@ -28,6 +30,9 @@ def resolve_place(query):
         return None
     with database() as db:
         row=db.execute('SELECT * FROM place_cache WHERE query_normalized=?',(key,)).fetchone()
+        if not row:
+            row=db.execute('''SELECT * FROM place_cache WHERE name_normalized=? AND (state IS NULL OR lower(state)='lagos')
+                ORDER BY CASE WHEN query_normalized LIKE 'osm:%' THEN 0 ELSE 1 END, id LIMIT 1''',(key,)).fetchone()
         if row:
             db.execute('UPDATE place_cache SET last_used_at=CURRENT_TIMESTAMP WHERE id=?',(row['id'],))
             return dict(row)
@@ -59,9 +64,10 @@ def resolve_place(query):
         result=dict(query_normalized=key,display_name=item['display_name'],latitude=lat,longitude=lon,
                     place_type=item.get('type'),source='openstreetmap',external_id=f"{item.get('osm_type','')}:{item.get('osm_id','')}",
                     city=address.get('city') or address.get('town') or address.get('suburb') or 'Lagos',
-                    state=address.get('state') or 'Lagos',country=address.get('country') or 'Nigeria')
+                    state=address.get('state') or 'Lagos',country=address.get('country') or 'Nigeria',
+                    name_normalized=normalize(item.get('name') or item['display_name'].split(',')[0]))
         with database() as db:
-            db.execute('''INSERT OR IGNORE INTO place_cache(query_normalized,display_name,latitude,longitude,place_type,source,external_id,city,state,country)
-                VALUES(:query_normalized,:display_name,:latitude,:longitude,:place_type,:source,:external_id,:city,:state,:country)''',result)
+            db.execute('''INSERT OR IGNORE INTO place_cache(query_normalized,display_name,latitude,longitude,place_type,source,external_id,city,state,country,name_normalized)
+                VALUES(:query_normalized,:display_name,:latitude,:longitude,:place_type,:source,:external_id,:city,:state,:country,:name_normalized)''',result)
         return result
     return None

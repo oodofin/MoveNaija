@@ -57,6 +57,8 @@ async def security(request: Request, call_next):
                 return Response('Invalid origin', status_code=403)
     response = await call_next(request)
     response.headers['X-Content-Type-Options'] = 'nosniff'
+    if request.url.path == '/' or request.url.path.startswith('/static/'):
+        response.headers['Cache-Control'] = 'no-cache'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
     response.headers['Content-Security-Policy'] = "default-src 'self'; img-src 'self' data: https://*.tile.openstreetmap.org https://unpkg.com; style-src 'self' https://unpkg.com; script-src 'self' https://unpkg.com; connect-src 'self'; object-src 'none'; base-uri 'self'"
     return response

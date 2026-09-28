@@ -44,6 +44,9 @@ def init_network():
                 'source_url': "TEXT NOT NULL DEFAULT ''",
                 'last_verified_at': 'TEXT',
                 'duration_known': 'INTEGER NOT NULL DEFAULT 1',
+                'conductor_call': "TEXT NOT NULL DEFAULT ''",
+                'boarding_instruction': "TEXT NOT NULL DEFAULT ''",
+                'dropoff_instruction': "TEXT NOT NULL DEFAULT ''",
             },
         }.items():
             present = {r['name'] for r in db.execute(f'PRAGMA table_info({table})')}
@@ -80,7 +83,22 @@ def init_network():
                 status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, reviewed_at TEXT
             );
+            CREATE TABLE IF NOT EXISTS journey_feedback (
+                id INTEGER PRIMARY KEY, route_id INTEGER NOT NULL REFERENCES routes(id),
+                helpful INTEGER NOT NULL CHECK(helpful IN (0,1)),
+                reason TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
+                route_sequence TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','reviewed')),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_journey_feedback_review ON journey_feedback(status,route_id);
         ''')
+        present={r['name'] for r in db.execute('PRAGMA table_info(route_discoveries)')}
+        for column in ('boarding_stop','dropoff_stop','conductor_call','experienced_on'):
+            if column not in present:
+                db.execute(f"ALTER TABLE route_discoveries ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+        if 'route_sequence' not in {r['name'] for r in db.execute('PRAGMA table_info(journey_feedback)')}:
+            db.execute("ALTER TABLE journey_feedback ADD COLUMN route_sequence TEXT NOT NULL DEFAULT ''")
         # LAMATA publishes both directions and all five station names. Do not
         # guess coordinates or fares; those remain unknown until sourced.
         source='https://www.lamata-ng.com/blue-line-train-schedule/'
@@ -89,13 +107,15 @@ def init_network():
         for name in names:
             row=db.execute('SELECT id FROM stops WHERE name=?',(name,)).fetchone()
             if row:
+                db.execute("UPDATE stops SET source='verified' WHERE id=? AND source='sample' AND verified=1 AND source_url=?",
+                           (row['id'],source))
                 ids.append(row['id'])
                 continue
             cur=db.execute('''INSERT INTO stops(name,location,description,transport_types,status,city,
-                alternative_names,area,stop_type,verified,source_url,created_at,updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)''',
+                alternative_names,area,stop_type,verified,source,source_url,verification_method,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)''',
                 (name,name+', Lagos','Lagos Blue Line station','Rail','Active','Lagos',
-                 name.replace(' Station',''),name.replace(' Station',''),'rail',1,source))
+                 name.replace(' Station',''),name.replace(' Station',''),'rail',1,'verified',source,'operator schedule'))
             ids.append(cur.lastrowid)
         for ordered in (ids,list(reversed(ids))):
             start,end=ordered[0],ordered[-1]
@@ -197,7 +217,7 @@ def nearby(lat, lon, limit=8, radius=None):
             row['distance_m']=distance_m(lat,lon,row['latitude'],row['longitude'])
             row['routes_served']=[dict(r) for r in db.execute('''SELECT routes.id,routes.name,routes.origin,routes.destination,routes.transport_type
                 FROM route_stops JOIN routes ON routes.id=route_stops.route_id
-                WHERE route_stops.stop_id=? AND routes.active=1 AND routes.source!='sample' ORDER BY routes.id''',(row['id'],))]
+                WHERE route_stops.stop_id=? AND routes.active=1 AND routes.source='verified' AND routes.verified=1 ORDER BY routes.id''',(row['id'],))]
     return sorted((r for r in rows if r['distance_m']<=search_radius),key=lambda x:x['distance_m'])[:limit]
 
 def suggestions(query, limit=8):
@@ -243,7 +263,7 @@ def journeys(origin='', destination='', lat=None, lon=None, origin_place=None, d
             starts=resolve(db,origin)
             if not starts:
                 return {'options':[], 'reason':'We could not find this location. Try another spelling or a nearby landmark.', 'nearby_destination_stops':targets}
-        route_rows=[dict(r) for r in db.execute("SELECT * FROM routes WHERE active=1 AND source!='sample' AND city='Lagos'")]
+        route_rows=[dict(r) for r in db.execute("SELECT * FROM routes WHERE active=1 AND verified=1 AND source='verified' AND city='Lagos'")]
         if not route_rows:
             return {'options':[], 'reason':'We found nearby transport stops, but we do not yet have enough reviewed route information for this journey.', 'nearby_destination_stops':targets}
         route_by_id={r['id']:r for r in route_rows}
@@ -304,7 +324,10 @@ def journeys(origin='', destination='', lat=None, lon=None, origin_place=None, d
                         'fare_max':route['estimated_max_fare'] or route['estimated_fare'] or None,
                         'duration':route['estimated_duration'] if route['duration_known'] else None,
                         'verified':bool(route['verified']),'source':route['source'],'source_url':route['source_url'],
-                        'last_updated':route['last_updated']})
+                        'last_updated':route['last_updated'],
+                        'conductor_call':route['conductor_call'] if route['verified'] else '',
+                        'boarding_instruction':route['boarding_instruction'] if route['verified'] else '',
+                        'dropoff_instruction':route['dropoff_instruction'] if route['verified'] else ''})
             for segment in segments:
                 ordered=route_stops[segment['route_id']]
                 if (segment['board_stop']['id'],segment['alight_stop']['id']) != (ordered[0],ordered[-1]):

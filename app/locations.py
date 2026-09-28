@@ -10,6 +10,8 @@ from .db import database
 
 _lock = threading.Lock()
 _last_request = 0.0
+PLACE_ALIASES = {'vi':'Victoria Island', 'unilag':'University of Lagos',
+                 'lasu':'Lagos State University'}
 
 def normalize(query):
     return ' '.join(query.casefold().strip().split())
@@ -34,7 +36,7 @@ def resolve_place(query):
     if not base.startswith('https://'):
         raise ValueError('Geocoder URL must use HTTPS')
     agent=os.getenv('MOVENAIJA_USER_AGENT','MoveNaija/0.2 (https://github.com/oodofin/MoveNaija)')
-    params=urllib.parse.urlencode({'q':query+', Lagos, Nigeria','format':'jsonv2','addressdetails':1,'limit':5,'countrycodes':'ng',
+    params=urllib.parse.urlencode({'q':PLACE_ALIASES.get(key,query)+', Lagos, Nigeria','format':'jsonv2','addressdetails':1,'limit':5,'countrycodes':'ng',
                                    'viewbox':'2.7,6.9,4.7,6.1','bounded':0})
     try:
         with _lock:

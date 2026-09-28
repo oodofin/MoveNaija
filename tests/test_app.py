@@ -94,7 +94,7 @@ def test_admin_graph_transfers_coordinates_and_fare_moderation(client):
         ids.append(response.json()['id'])
     assert client.get('/api/stops/nearby',params={'lat':6.5,'lon':3.4}).json()[0]['name']=='Test A'
     assert client.post('/api/stops/nearby',json={'lat':6.5,'lon':3.4}).json()[0]['name']=='Test A'
-    base={'origin':'Test A','destination':'Test B','transport_type':'Bus','estimated_fare':300,'estimated_max_fare':500,'estimated_duration':10,'transfers':0,'instructions':'Board the bus.|Get down at the next stop.','status':'Available','source':'community','city':'Lagos'}
+    base={'origin':'Test A','destination':'Test B','transport_type':'Bus','estimated_fare':300,'estimated_max_fare':500,'estimated_duration':10,'transfers':0,'instructions':'Board the bus.|Get down at the next stop.','status':'Available','source':'verified','verified':True,'source_url':'https://example.org/test-service','city':'Lagos'}
     first=client.post('/api/admin/routes',headers=headers,json={**base,'stop_ids':ids[:2]})
     assert first.status_code==201,first.text
     second=client.post('/api/admin/routes',headers=headers,json={**base,'origin':'Test B','destination':'Test D','stop_ids':ids[1:]})
@@ -110,7 +110,24 @@ def test_admin_graph_transfers_coordinates_and_fare_moderation(client):
     assert report.status_code==201,report.text
     assert client.patch('/api/admin/fare-reports/'+str(report.json()['id']),headers=headers,json={'status':'approved'}).status_code==200
     assert client.get('/api/routes/'+str(first.json()['id'])).json()['estimated_fare']==300
-    assert client.post('/api/admin/routes',headers=headers,json={**base,'verified':True,'source':'verified','stop_ids':ids[:2]}).status_code==422
+    assert client.post('/api/admin/routes',headers=headers,json={**base,'source':'community','stop_ids':ids[:2]}).status_code==422
+
+def test_unverified_admin_route_does_not_become_travel_advice(client):
+    csrf=register(client,'draft-admin@example.com')
+    import app.db as db
+    with db.database() as conn:
+        conn.execute("UPDATE users SET role='admin' WHERE email='draft-admin@example.com'")
+    headers={'X-CSRF-Token':csrf}
+    ids=[]
+    for name in ('Draft A','Draft B'):
+        response=client.post('/api/admin/stops',headers=headers,json={'name':name,'location':'Lagos'})
+        ids.append(response.json()['id'])
+    response=client.post('/api/admin/routes',headers=headers,json={'origin':'Draft A','destination':'Draft B',
+        'transport_type':'Bus','estimated_fare':0,'estimated_duration':None,'transfers':0,
+        'instructions':'Unreviewed submission only.','source':'community','stop_ids':ids})
+    assert response.status_code==201,response.text
+    result=client.get('/api/journeys',params={'origin':'Draft A','destination':'Draft B'}).json()
+    assert result['options']==[]
 
 def test_place_resolution_cache_and_missing_connections(client,monkeypatch):
     import app.locations as locations
@@ -221,3 +238,68 @@ def test_operator_published_ferry_routes_and_repeatable_seed(client):
     with db.database() as conn:
         assert conn.execute("SELECT COUNT(*) FROM routes WHERE external_id LIKE 'lagferry:%' OR external_id LIKE 'lamata:red-line:%'").fetchone()[0]==route_count
         assert conn.execute("SELECT COUNT(*) FROM stops WHERE source='verified' AND stop_type IN ('rail','ferry')").fetchone()[0]==stop_count
+
+@pytest.mark.parametrize(('phrase','origin','destination'),[
+    ('Ikeja to Obalende','Ikeja','Obalende'),
+    ('How do I get from Oshodi to Ajah?','Oshodi','Ajah'),
+    ("I'm at Yaba going to Computer Village",'Yaba','Computer Village'),
+    ('How I fit reach CMS from Ikeja?','Ikeja','CMS'),
+    ('From Badagry to Victoria Island','Badagry','Victoria Island'),
+])
+def test_journey_phrase_requires_confirmation_before_route_search(client,phrase,origin,destination):
+    result=client.post('/api/journeys/interpret',json={'query':phrase})
+    assert result.status_code==200 and result.json()=={'origin':origin,'destination':destination}
+
+def test_journey_phrase_rejects_uncertain_input(client):
+    assert client.post('/api/journeys/interpret',json={'query':'Ikeja'}).status_code==422
+    assert client.post('/api/journeys/interpret',json={'query':'Ikeja to Ikeja'}).status_code==422
+    assert client.post('/api/journeys/interpret',json={'query':'How far is it?'}).status_code==422
+
+def test_short_location_alias_uses_geocoder_not_guessed_coordinates(client,monkeypatch):
+    import app.locations as locations
+    urls=[]
+    class Reply:
+        def __enter__(self):return self
+        def __exit__(self,*args):pass
+    def fake_open(request,timeout):
+        urls.append(request.full_url)
+        return Reply()
+    monkeypatch.setattr(locations.urllib.request,'urlopen',fake_open)
+    monkeypatch.setattr(locations.json,'load',lambda _: [{'lat':'6.43','lon':'3.41',
+        'display_name':'Victoria Island, Lagos, Nigeria','type':'suburb',
+        'osm_type':'relation','osm_id':987,'address':{'country_code':'ng','state':'Lagos'}}])
+    result=client.get('/api/locations/search',params={'q':'VI'})
+    assert result.status_code==200 and result.json()['display_name'].startswith('Victoria Island')
+    assert 'Victoria+Island' in urls[0]
+
+def test_verified_conductor_note_and_anonymous_moderated_feedback(client):
+    import app.db as db
+    csrf=register(client,'conductor-admin@example.com')
+    with db.database() as conn:
+        conn.execute("UPDATE users SET role='admin' WHERE email='conductor-admin@example.com'")
+    headers={'X-CSRF-Token':csrf}
+    ids=[]
+    for name in ['Source A','Source B']:
+        response=client.post('/api/admin/stops',headers=headers,json={'name':name,'location':'Lagos','verified':True,'source_url':'https://example.org/checked-stop'})
+        assert response.status_code==201,response.text
+        ids.append(response.json()['id'])
+    route=client.post('/api/admin/routes',headers=headers,json={
+        'origin':'Source A','destination':'Source B','transport_type':'Bus','estimated_fare':300,
+        'estimated_duration':12,'transfers':0,'instructions':'Board at Source A.|Get down at Source B.',
+        'source':'verified','verified':True,'source_url':'https://example.org/route',
+        'stop_ids':ids,'conductor_call':'Source B','boarding_instruction':'Use the marked bay.',
+        'dropoff_instruction':'Exit at the final stop.'})
+    assert route.status_code==201,route.text
+    rid=route.json()['id']
+    segment=client.get('/api/journeys',params={'origin':'Source A','destination':'Source B'}).json()['options'][0]['segments'][0]
+    assert segment['conductor_call']=='Source B' and segment['boarding_instruction']=='Use the marked bay.'
+    assert client.post('/api/reports/journey-feedback',json={'route_id':rid,'helpful':False}).status_code==422
+    assert client.post('/api/reports/journey-feedback',json={'route_id':1,'helpful':True}).status_code==404  # Sample is not a reviewed journey.
+    assert client.post('/api/reports/journey-feedback',json={'route_id':rid,'helpful':True,'route_sequence':[1]}).status_code==422
+    feedback=client.post('/api/reports/journey-feedback',json={'route_id':rid,'helpful':False,'reason':'wrong_boarding','note':'Bay was closed.','route_sequence':[rid]})
+    assert feedback.status_code==201 and feedback.json()['status']=='pending'
+    assert client.get('/api/admin/journey-feedback').json()[0]['reason']=='wrong_boarding'
+    assert client.get('/api/admin/journey-feedback').json()[0]['route_sequence']==str(rid)
+    assert client.patch('/api/admin/journey-feedback/'+str(feedback.json()['id']),headers=headers).status_code==200
+    assert client.get('/api/admin/journey-feedback').json()[0]['status']=='reviewed'
+    assert client.get('/api/journeys',params={'origin':'Source A','destination':'Source B'}).json()['options'][0]['segments'][0]['conductor_call']=='Source B'

@@ -19,6 +19,7 @@ from .db import database, init_db
 from .network import MODES, STOP_TYPES, init_network, journeys, nearby, suggestions
 from .locations import resolve_place, cached_suggestions
 from .fares import find_published_fares, published_corridors
+from .query import interpret_journey
 
 ROOT = Path(__file__).resolve().parent
 COOKIE = 'movenaija_session'
@@ -46,7 +47,7 @@ async def security(request: Request, call_next):
         hits = _hits[key]
         while hits and hits[0] < now - 60:
             hits.popleft()
-        limit = 12 if key[1] == 'auth' else 120
+        limit = 12 if key[1] == 'auth' else 30 if key[1] == 'reports' else 120
         if len(hits) >= limit:
             return Response('Too many requests. Try again shortly.', status_code=429)
         hits.append(now)
@@ -73,6 +74,32 @@ class ReportInput(BaseModel):
     location: str = Field(min_length=2, max_length=120)
     route_id: int | None = None
 
+class JourneyFeedbackInput(BaseModel):
+    route_id: int = Field(gt=0)
+    helpful: bool
+    reason: str = Field(default='', pattern='^(|route_stopped|wrong_fare|wrong_boarding|wrong_dropoff|wrong_mode|missing_transfer|other)$')
+    note: str = Field(default='', max_length=500)
+    route_sequence: list[int] = Field(default_factory=list, max_length=4)
+
+@app.post('/api/reports/journey-feedback',status_code=201)
+def journey_feedback(data: JourneyFeedbackInput):
+    if not data.helpful and not data.reason:
+        raise HTTPException(422,'Choose what needs correcting.')
+    if data.route_sequence and (data.route_sequence[0]!=data.route_id or any(id<=0 for id in data.route_sequence)):
+        raise HTTPException(422,'Invalid journey route sequence.')
+    with database() as db:
+        route=db.execute("SELECT id FROM routes WHERE id=? AND active=1 AND source='verified' AND verified=1",(data.route_id,)).fetchone()
+        if not route:
+            raise HTTPException(404,'Reviewed route not found.')
+        if data.route_sequence:
+            verified=db.execute("SELECT COUNT(DISTINCT id) FROM routes WHERE active=1 AND source='verified' AND verified=1 AND id IN ("+','.join('?' for _ in data.route_sequence)+')',data.route_sequence).fetchone()[0]
+            if verified!=len(set(data.route_sequence)):
+                raise HTTPException(422,'Journey contains an unreviewed route.')
+        cur=db.execute('''INSERT INTO journey_feedback(route_id,helpful,reason,note,route_sequence)
+            VALUES(?,?,?,?,?)''',(data.route_id,int(data.helpful),data.reason,data.note.strip(),
+                                   ','.join(str(id) for id in (data.route_sequence or [data.route_id]))))
+    return {'id':cur.lastrowid,'status':'pending'}
+
 class RouteInput(BaseModel):
     origin: str = Field(min_length=2, max_length=100)
     destination: str = Field(min_length=2, max_length=100)
@@ -90,6 +117,9 @@ class RouteInput(BaseModel):
     source_url: str = Field(default='', max_length=500)
     verified: bool = False
     stop_ids: list[int] = Field(default_factory=list, max_length=100)
+    conductor_call: str = Field(default='', max_length=100)
+    boarding_instruction: str = Field(default='', max_length=300)
+    dropoff_instruction: str = Field(default='', max_length=300)
     @field_validator('instructions')
     @classmethod
     def steps(cls, value):
@@ -297,6 +327,18 @@ def location_search(q: str):
     if not place: raise HTTPException(404,'We could not find this location. Try another spelling or a nearby landmark.')
     return place
 
+class JourneyPhrase(BaseModel):
+    query: str = Field(min_length=5,max_length=220)
+
+@app.post('/api/journeys/interpret')
+def interpret(data: JourneyPhrase):
+    parsed=interpret_journey(data.query)
+    if not parsed:
+        raise HTTPException(422,'Enter a journey such as “Yaba to Ikeja”, or use the From and To fields.')
+    # Parsing is separate from place resolution; the commuter confirms both
+    # extracted names before we geocode or search the transport graph.
+    return parsed
+
 @app.get('/api/fares/published')
 def published_fares(origin: str, destination: str):
     if not (2<=len(origin.strip())<=100 and 2<=len(destination.strip())<=100):
@@ -407,12 +449,29 @@ class RouteDiscoveryInput(BaseModel):
     transfer_details: str = Field(default='',max_length=500)
     approximate_fare: int | None = Field(default=None,gt=0,le=1000000)
     instructions: str = Field(min_length=10,max_length=1200)
+    boarding_stop: str = Field(default='',max_length=120)
+    dropoff_stop: str = Field(default='',max_length=120)
+    conductor_call: str = Field(default='',max_length=100)
+    experienced_on: str = Field(default='',max_length=10)
+
+    @field_validator('experienced_on')
+    @classmethod
+    def experienced_date(cls, value):
+        if value:
+            from datetime import date
+            try:
+                day=date.fromisoformat(value)
+            except ValueError:
+                raise ValueError('Use YYYY-MM-DD for the journey date.')
+            if day > date.today():
+                raise ValueError('The journey date cannot be in the future.')
+        return value
 
 @app.post('/api/reports/routes',status_code=201)
 def report_route_discovery(data:RouteDiscoveryInput,user=Depends(current_user)):
     with database() as db:
-        cur=db.execute('''INSERT INTO route_discoveries(user_id,starting_stop,destination_stop,transport_type,transfer_details,approximate_fare,instructions)
-            VALUES(?,?,?,?,?,?,?)''',(user['id'],*data.model_dump().values()))
+        values={'user_id':user['id'],**data.model_dump()}
+        cur=db.execute(f"INSERT INTO route_discoveries({','.join(values)}) VALUES({','.join('?' for _ in values)})",tuple(values.values()))
     return {'id':cur.lastrowid,'status':'pending'}
 
 @app.get('/api/me/route-discoveries')
@@ -568,6 +627,21 @@ def import_approved_routes(data: list[RouteInput],user=Depends(admin)):
 def admin_reports(user=Depends(admin)):
     with database() as db:
         return [dict(r) for r in db.execute('SELECT reports.*,users.name AS reporter FROM reports JOIN users ON users.id=reports.user_id ORDER BY CASE reports.status WHEN \'pending\' THEN 0 ELSE 1 END, reports.id DESC LIMIT 100')]
+
+@app.get('/api/admin/journey-feedback')
+def admin_journey_feedback(user=Depends(admin)):
+    with database() as db:
+        return [dict(r) for r in db.execute('''SELECT journey_feedback.*,routes.name AS route_name
+            FROM journey_feedback JOIN routes ON routes.id=journey_feedback.route_id
+            ORDER BY journey_feedback.id DESC LIMIT 100''')]
+
+@app.patch('/api/admin/journey-feedback/{feedback_id}')
+def review_journey_feedback(feedback_id:int,user=Depends(admin)):
+    with database() as db:
+        cur=db.execute("UPDATE journey_feedback SET status='reviewed' WHERE id=? AND status='pending'",(feedback_id,))
+        if not cur.rowcount: raise HTTPException(404,'Pending feedback not found.')
+        audit(db,user,'review','journey_feedback',feedback_id)
+    return {'ok':True}
 
 @app.get('/api/admin/route-discoveries')
 def admin_route_discoveries(user=Depends(admin)):

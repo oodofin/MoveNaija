@@ -18,7 +18,7 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 from .db import database, init_db
 from .network import MODES, STOP_TYPES, init_network, journeys, nearby, suggestions
 from .locations import resolve_place, cached_suggestions
-from .fares import find_published_fares, published_corridors
+from .fares import find_published_fares, published_corridors, incoming_services
 from .query import interpret_journey
 
 ROOT = Path(__file__).resolve().parent
@@ -370,6 +370,7 @@ def plan(origin, destination, lat=None, lon=None):
     result['origin_place']=origin_place or ({'display_name':'Current location','latitude':lat,'longitude':lon} if lat is not None else None)
     result['destination_place']=dest_place
     result['published_corridors']=corridors
+    result['incoming_services']=incoming_services(destination) if not result['options'] and not corridors else []
     result['status']='route_found' if result['options'] else ('published_corridors' if corridors else 'no_nearby_stops' if 'transport information nearby' in result['reason'] else 'no_connected_route')
     if corridors and not result['options']:
         result['reason']=None

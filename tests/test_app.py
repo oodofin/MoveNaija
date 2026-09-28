@@ -169,6 +169,12 @@ def test_place_resolution_cache_and_missing_connections(client,monkeypatch):
     result=client.get('/api/journeys',params={'origin':'Yaba','destination':'Ikotun'}).json()
     assert result['status']=='no_nearby_stops' and result['destination_place']['display_name'].startswith('Ikotun')
     assert result['options']==[]
+    assert result['incoming_services']==[{'label':'Ikeja-Ikotun','mode':'Standard','from_area':'Ikeja',
+        'to_area':'Ikotun','listed_fares':[630],'effective_date':'2026-03-01',
+        'source_url':'https://www.lamata-ng.com/bus-fare/'}]
+    nearby=client.post('/api/journeys',json={'lat':6.5,'lon':3.4,'destination':'Ikotun'}).json()
+    assert nearby['options']==[] and nearby['incoming_services'][0]['from_area']=='Ikeja'
+    assert nearby['incoming_services'][0]['listed_fares']==[630]
     assert client.get('/api/locations/suggest',params={'q':'Iko'}).json()
 
 def test_osm_import_is_idempotent_and_not_a_route(client):

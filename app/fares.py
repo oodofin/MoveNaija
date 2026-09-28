@@ -44,6 +44,29 @@ def find_published_fares(origin, destination):
             entry['published_amounts'].append(row['fare'])
     return list(found.values())[:12]
 
+def incoming_services(destination, limit=6):
+    """Listed directed endpoint services arriving at an area, never a full journey.
+
+    Use when the requested origin has no known connection. Keep the published
+    endpoint direction and fare separate from a boarding stop or total price.
+    """
+    goal=normalized(destination)
+    if not goal: return []
+    source=published_data()
+    grouped={}
+    for row in source['rows']:
+        ends=endpoints(row['label'])
+        if not ends or goal not in ends[1]: continue
+        key=(row['label'],row['mode'])
+        item=grouped.setdefault(key,{'label':row['label'],'mode':row['mode'],
+            'from_area':row['label'].split('-')[0].strip(),
+            'to_area':endpoint_name(row['label'],1,goal),
+            'listed_fares':[], 'effective_date':source['effective_date'],
+            'source_url':source['source_url']})
+        if row['fare'] not in item['listed_fares']:
+            item['listed_fares'].append(row['fare'])
+    return list(grouped.values())[:limit]
+
 def published_corridors(origin, destination, max_legs=3):
     """Find directed chains of published endpoint services only.
 

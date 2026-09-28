@@ -63,11 +63,12 @@ def test_admin_review_audit_and_escaping(client):
 def test_network_uses_only_connected_stops_and_lamata_sequence(client):
     direct=client.get('/api/journeys',params={'origin':'Marina','destination':'Mile 2'}).json()
     assert direct['options']
-    segment=direct['options'][0]['segments'][0]
+    rail_option=next(o for o in direct['options'] if o['segments'][0]['mode']=='Rail')
+    segment=rail_option['segments'][0]
     assert segment['mode']=='Rail'
     assert segment['via']==['Marina Station','National Theatre Station','Iganmu Station','Alaba Station','Mile 2 Station']
-    assert direct['options'][0]['fare_min'] is None
-    assert direct['options'][0]['transfers']==0
+    assert rail_option['fare_min'] is None
+    assert rail_option['transfers']==0
     partial=client.get('/api/journeys',params={'origin':'National Theatre','destination':'Iganmu'}).json()['options'][0]
     assert partial['duration_min'] is None  # End-to-end estimates are not reused for short rides.
     red=client.get('/api/journeys',params={'origin':'Yaba','destination':'Ikeja'}).json()
@@ -250,6 +251,12 @@ def test_operator_published_ferry_routes_and_repeatable_seed(client):
     assert first[0]['fare_min']==2200 and first[0]['duration_min']==50
     reverse=client.get('/api/journeys',params={'origin':'Falomo','destination':'Ikorodu'}).json()['options']
     assert reverse and reverse[0]['fare_min']==2200
+    marina=client.get('/api/journeys',params={'origin':'Ikorodu','destination':'Marina'}).json()['options']
+    assert any(option['segments'][0]['via']==['Ipakodo Ferry Terminal','Ebute Ero Jetty','Marina Ferry Terminal']
+               and option['fare_min'] is None and option['duration_min'] is None for option in marina)
+    return_ferry=client.get('/api/journeys',params={'origin':'Marina','destination':'Ikorodu'}).json()['options']
+    assert any(option['segments'][0]['via']==['Marina Ferry Terminal','Ebute Ero Jetty','Ipakodo Ferry Terminal']
+               for option in return_ferry)
     assert client.get('/api/journeys',params={'origin':'Badore','destination':'Ijede'}).json()['options'][0]['fare_min']==2500
     with db.database() as conn:
         route_count=conn.execute("SELECT COUNT(*) FROM routes WHERE external_id LIKE 'lagferry:%' OR external_id LIKE 'lamata:red-line:%'").fetchone()[0]

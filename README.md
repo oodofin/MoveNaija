@@ -73,6 +73,8 @@ python -m scripts.import_lagos_transport /path/to/lagos.json
 
 For a deliberate one-off bounded Overpass query, set `MOVENAIJA_USER_AGENT` with your contact and use `python -m scripts.import_lagos_transport --fetch`. The query uses approximate Lagos bounds and is **not a legal Lagos State polygon**; review its output before use. Respect the [Overpass service limits](https://wiki.openstreetmap.org/wiki/Overpass_API) and use regional extracts or a hosted provider at scale. No bulk import was performed as part of this change. The importer upserts by OSM object type and ID, refreshes coordinates and sync timestamps, and leaves records that disappear from a source in place for review. Imported stops are unverified and have no route links. Because the legacy database has unique stop names, new OSM records display their source ID as a suffix; an admin can merge duplicates after review. Existing accounts, sample data and routes remain in place. Schema additions occur at startup and preserve existing tables.
 
+The operator's [terminal route listing](https://lagferry.gov.ng/our-terminals/) also documents Ikorodu → Ebute Ero → Marina; the published schedule lists the reverse order. Both directions now enter the ferry network with **unknown fare and duration**, so the planner can show this actual connection without inventing a price. Searching an area name such as Marina considers both the rail station and ferry terminal as separate possible stops.
+
 ### Import mapped Lagos places
 
 The separate `scripts.import_lagos_places` command accepts a bounded Overpass JSON export of named neighbourhoods, localities, schools, universities, hospitals, markets, malls, attractions, airports, stations and terminals:

@@ -194,6 +194,13 @@ def init_network():
             for a,b in ((start,end),(end,start)):
                 published_service(f'lagferry:{a.lower().replace(" ","-")}:{b.lower().replace(" ","-")}',
                                   [ferry_ids[a],ferry_ids[b]],'Ferry','LAGFERRY',ferry_source,fare,duration)
+        # The operator lists this ordered service and its return. Its page does
+        # not establish a dependable fare or full-trip time for this pattern.
+        ebute_source='https://lagferry.gov.ng/our-terminals/'
+        ebute_id=published_stop('Ebute Ero Jetty','Ebute Ero','ferry','LAGFERRY',ebute_source)
+        for key,ordered in (('outbound',[ferry_ids['Ikorodu'],ebute_id,ferry_ids['Marina']]),
+                            ('inbound',[ferry_ids['Marina'],ebute_id,ferry_ids['Ikorodu']])):
+            published_service(f'lagferry:ikorodu-marina:{key}',ordered,'Ferry','LAGFERRY',ebute_source)
         # Demonstration-only corridor for the onboarding search. It has no
         # stop links and therefore cannot enter the transport graph. Fare,
         # duration and boarding location are intentionally unknown.
@@ -248,7 +255,9 @@ def resolve(db, query):
         names=[row['name'],row['area'],row['landmarks'],*[a.strip() for a in row['alternative_names'].split(',')]]
         if any(term==str(n).casefold() for n in names if n): exact.append(dict(row))
         elif any(term in str(n).casefold() for n in names if n): partial.append(dict(row))
-    return exact or partial[:4]
+    # A place may have several distinct transport facilities: Marina station
+    # and Marina ferry terminal, for example. Keep both as candidate nodes.
+    return (exact+partial[:max(0,8-len(exact))])[:8] if exact else partial[:4]
 
 def journeys(origin='', destination='', lat=None, lon=None, origin_place=None, destination_place=None):
     with database() as db:
